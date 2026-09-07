@@ -28,6 +28,7 @@ const valid = {
   autoExpandOnRecording: false,
   dockContentProtection: false,
   telemetryOptOut: false,
+  keepAudio: true,
   // Transcription engine.
   transcription: { engine: 'cloud', modelId: null, byokBaseUrl: null, byokModel: null },
   ai: { provider: 'openai', model: null, baseUrl: null },
@@ -52,6 +53,37 @@ describe('device-settings schemas', () => {
       expect((parsed.data as Record<string, unknown>).idToken).toBeUndefined();
       expect(JSON.stringify(parsed.data)).not.toContain('SENTINEL');
     }
+  });
+
+  it('an ai record persisted before cliCommand existed still parses, defaulting to null', () => {
+    // Load-bearing: settings decode per field and fall back to the DEFAULT on a
+    // failed parse, so a required cliCommand would silently reset every
+    // existing user's provider choice on the first launch after this ships.
+    const parsed = parseDeviceSettings({
+      ...valid,
+      ai: { provider: 'anthropic', model: 'claude-opus-5', baseUrl: null },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.ai).toEqual({
+        provider: 'anthropic',
+        model: 'claude-opus-5',
+        baseUrl: null,
+        cliCommand: null,
+        cliEffort: null,
+      });
+    }
+  });
+
+  it('accepts the cli provider and its command template', () => {
+    const parsed = parseDeviceSettings({
+      ...valid,
+      ai: { provider: 'cli', model: 'claude/opus', baseUrl: null, cliCommand: 'my-agent --print' },
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      parseDeviceSettings({ ...valid, ai: { ...valid.ai, provider: 'not-a-provider' } }).success
+    ).toBe(false);
   });
 
   it('enum + type validation is closed (widgetVisibility, updateChannel, field types)', () => {

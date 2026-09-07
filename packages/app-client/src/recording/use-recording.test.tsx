@@ -174,6 +174,7 @@ function makePorts(
       restartToUpdate: () => Promise.resolve(),
       dismissUpdatePrompt: () => Promise.resolve(),
       exportLogs: () => Promise.resolve(),
+      revealAudio: () => Promise.resolve(),
       openFloatingNote: () => Promise.resolve(),
       restartApp: () => Promise.resolve(),
       resetApp: () => Promise.resolve(),
@@ -208,6 +209,8 @@ function makePorts(
         download: () => Promise.resolve(),
         cancelDownload: () => Promise.resolve(),
         delete: () => Promise.resolve(),
+        import: () =>
+          Promise.resolve({ outcome: 'not-found' as const, imported: 0, total: 0, sourceDir: null }),
         subscribe: () => () => {},
       },
       transcriptionByok: {

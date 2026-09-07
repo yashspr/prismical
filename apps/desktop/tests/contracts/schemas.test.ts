@@ -127,14 +127,17 @@ describe('schema parse helpers', () => {
     expect(parseInboundCollabMessage({ type: 'update', data: bytes }).success).toBe(true);
     expect(parseInboundCollabMessage({ type: 'update', data: 'text' }).success).toBe(false);
     expect(
-      parseInboundCollabMessage({ type: 'flush', text: 'a', markdown: null, firstLine: 'a' }).success
+      parseInboundCollabMessage({ type: 'flush', text: 'a', markdown: null, firstLine: 'a' })
+        .success
     ).toBe(true);
     expect(
       parseInboundCollabMessage({ type: 'flush', text: 'a', markdown: '# a', firstLine: 'a' })
         .success
     ).toBe(true);
     expect(parseInboundCollabMessage({ type: 'flush', text: 'a' }).success).toBe(false);
-    expect(parseInboundCollabMessage({ type: 'compact', upTo: 3, state: bytes }).success).toBe(true);
+    expect(parseInboundCollabMessage({ type: 'compact', upTo: 3, state: bytes }).success).toBe(
+      true
+    );
     expect(parseInboundCollabMessage({ type: 'compact', upTo: -1, state: bytes }).success).toBe(
       false
     );
@@ -396,7 +399,9 @@ describe('local models', () => {
     installed: false,
     installedAt: null,
     download: null,
+    linked: false,
   };
+
 
   it('parses a strict model request (id only)', () => {
     expect(parseModelRequest({ modelId: 'whisper-base-en' }).success).toBe(true);
@@ -428,7 +433,12 @@ describe('local models', () => {
       models: [
         {
           ...model,
-          download: { status: 'error', bytesDownloaded: 0, totalBytes: 100, error: 'checksum-mismatch' },
+          download: {
+            status: 'error',
+            bytesDownloaded: 0,
+            totalBytes: 100,
+            error: 'checksum-mismatch',
+          },
         },
       ],
       modelsDir: '/models',
@@ -443,7 +453,10 @@ describe('local models', () => {
     expect(
       parseModelsStateView({
         models: [
-          { ...model, download: { status: 'error', bytesDownloaded: 0, totalBytes: 1, error: 'boom' } },
+          {
+            ...model,
+            download: { status: 'error', bytesDownloaded: 0, totalBytes: 1, error: 'boom' },
+          },
         ],
         modelsDir: '/m',
       }).success
@@ -482,7 +495,9 @@ describe('transcription BYOK key request', () => {
     expect(parseTranscriptionByokKeyRequest({ key: '', baseUrl }).success).toBe(false);
     expect(parseTranscriptionByokKeyRequest({ key: 'sk-test' }).success).toBe(false);
     expect(parseTranscriptionByokKeyRequest({ key: 'sk-test', baseUrl: ' ' }).success).toBe(false);
-    expect(parseTranscriptionByokKeyRequest({ key: 'sk-test', baseUrl, extra: 1 }).success).toBe(false);
+    expect(parseTranscriptionByokKeyRequest({ key: 'sk-test', baseUrl, extra: 1 }).success).toBe(
+      false
+    );
     expect(parseTranscriptionByokKeyRequest({}).success).toBe(false);
     expect(parseTranscriptionByokKeyRequest('sk-test').success).toBe(false);
   });
@@ -511,6 +526,8 @@ describe('AI provider key and catalogue requests', () => {
       success: true,
       data: { provider: 'ollama' },
     });
+    expect(parseAiProviderRequest({ provider: 'cli' }).success).toBe(true);
+    expect(parseAiModelListRequest({ provider: 'cli' }).success).toBe(true);
     expect(parseAiModelListRequest({ provider: 'ollama', force: true }).success).toBe(true);
     expect(parseAiModelListRequest({ provider: 'ollama', force: 'yes' }).success).toBe(false);
     expect(parseAiModelListRequest({ provider: 'ollama', extra: 1 }).success).toBe(false);
@@ -560,6 +577,8 @@ describe('channel names', () => {
       modelsDownload: 'models:download',
       modelsCancelDownload: 'models:cancelDownload',
       modelsDelete: 'models:delete',
+      modelsImport: 'models:import',
+
       modelsStateChanged: 'models:stateChanged',
       capabilityCheckUpdates: 'capability:checkUpdates',
       updaterGetState: 'updater:getState',
@@ -567,6 +586,7 @@ describe('channel names', () => {
       updaterQuitInstall: 'updater:quitInstall',
       updaterDismissPrompt: 'updater:dismissPrompt',
       capabilityExportLogs: 'capability:exportLogs',
+      capabilityRevealAudio: 'capability:revealAudio',
       capabilityRestartApp: 'capability:restartApp',
       capabilityResetApp: 'capability:resetApp',
       capabilityGetAppModeState: 'capability:getAppModeState',

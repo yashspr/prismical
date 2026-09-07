@@ -14,6 +14,7 @@ export const AI_PROVIDER_KINDS: ReadonlyArray<AiProviderKind> = [
   'anthropic',
   'openai-compatible',
   'ollama',
+  'cli',
 ];
 
 export const localInstanceId = (provider: AiProviderKind): string =>
@@ -32,4 +33,5 @@ export const PROVIDER_LABELS: Record<AiProviderKind, string> = {
   anthropic: 'Anthropic',
   'openai-compatible': 'OpenAI-compatible',
   ollama: 'Ollama',
+  cli: 'Local CLI agent',
 };

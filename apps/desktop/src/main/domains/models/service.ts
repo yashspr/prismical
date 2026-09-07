@@ -1,5 +1,10 @@
 import { Context, Data, type Effect, type Option, type SubscriptionRef } from 'effect';
-import type { ModelDownloadError, ModelsStateView } from '@prismical/desktop-contracts';
+import type {
+  ModelDownloadError,
+  ModelImportResult,
+  ModelsStateView,
+} from '@prismical/desktop-contracts';
+
 import type { DbError } from '../../infra/operational-db/service';
 
 /**
@@ -71,6 +76,21 @@ export interface ModelManagerApi {
   readonly cancel: (modelId: string) => Effect.Effect<void>;
   /** Cancel any in-flight download, unlink the file, delete the row, republish. */
   readonly delete: (modelId: string) => Effect.Effect<void, ModelError | DbError>;
+  /**
+   * Install a model from a copy that is ALREADY on this device, without
+   * downloading a byte. `sourceDir` null scans the model directories the app
+   * knows about; otherwise it is a folder the user picked. Only files whose
+   * SHA-1 matches the catalogue pin are taken, and they are hard-linked (or
+   * symlinked across filesystems) into modelsDir — so a 660 MB model shared
+   * with another app costs one directory entry, and deleting it here never
+   * touches the original.
+   *
+   * ANSWERS, unlike the fire-and-forget verbs: "nothing matched" is not a state
+   * the snapshot can express, and a user is waiting on it. Never fails — every
+   * refusal is an `outcome`.
+   */
+  readonly import: (modelId: string, sourceDir: string | null) => Effect.Effect<ModelImportResult>;
+
   /**
    * Disk ↔ rows reconciliation (forked at boot; tolerant of a missing dir):
    * rows without files → deleted; catalogue-named files without rows → adopted

@@ -85,21 +85,33 @@ export interface TranscriptionSetting {
 /**
  * The language-model provider the local Ask/Skills lanes run on: a BYO key
  * (OpenAI, Anthropic, any OpenAI-compatible
- * endpoint) or a local Ollama runtime.
+ * endpoint), a local Ollama runtime, or `cli` — an agent CLI already installed
+ * and signed in on this machine (Claude Code, Codex, opencode, cursor-agent, or
+ * a user-supplied command).
  */
-export type AiProviderKind = 'openai' | 'anthropic' | 'openai-compatible' | 'ollama';
+export type AiProviderKind = 'openai' | 'anthropic' | 'openai-compatible' | 'ollama' | 'cli';
+
+/**
+ * Reasoning-effort levels the `cli` provider can ask for (Claude Code's
+ * `--effort` vocabulary). Mirrors desktop-contracts' zod enum.
+ */
+export type CliEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
  * The AI-provider preference. ONE record so the knobs move
  * together. `model` is the provider's model id (null = the provider default);
  * `baseUrl` is the endpoint for openai-compatible / ollama (null = the
- * provider default). API keys NEVER ride device settings — they live in main's
- * secure store, one slot per provider kind.
+ * provider default); `cliCommand` is the `cli` provider's custom command
+ * template (null = use a built-in CLI descriptor). API keys NEVER ride device
+ * settings — they live in main's secure store, one slot per provider kind.
  */
 export interface AiProviderSetting {
   readonly provider: AiProviderKind;
   readonly model: string | null;
   readonly baseUrl: string | null;
+  readonly cliCommand: string | null;
+  /** Reasoning effort for the `cli` provider; null = the CLI's own default. */
+  readonly cliEffort: CliEffort | null;
 }
 
 /** A provider's live model catalogue, or why it could not be fetched (`models` stays empty). */
@@ -116,7 +128,7 @@ export interface AiModelListing {
 // ---------------------------------------------------------------------------
 
 /** What a catalogue entry is for: whisper decoder weights, or VAD weights. */
-export type LocalModelKind = 'whisper' | 'vad';
+export type LocalModelKind = 'whisper' | 'vad' | 'parakeet';
 
 export type LocalModelDownloadStatus = 'downloading' | 'verifying' | 'cancelling' | 'error';
 
@@ -142,7 +154,38 @@ export interface LocalModel {
   readonly installed: boolean;
   readonly installedAt: string | null;
   readonly download: LocalModelDownload | null;
+  /**
+   * True when the weights are a LINK to a copy that already lived elsewhere on
+   * the device (see `localModels.import`), not bytes this app downloaded.
+   * Deleting such a model only drops the link — the screen says so.
+   */
+  readonly linked: boolean;
 }
+
+/**
+ * Where an `import` attempt ended up. `partial` is a real outcome, not a
+ * failure: an existing copy may hold three of a four-file model, and those
+ * three are kept — the rest download normally.
+ */
+export type LocalModelImportOutcome =
+  | 'imported'
+  | 'partial'
+  | 'not-found'
+  | 'cancelled'
+  | 'already-installed'
+  | 'unknown-model'
+  | 'io';
+
+export interface LocalModelImportResult {
+  readonly outcome: LocalModelImportOutcome;
+  /** Files linked from the existing copy. */
+  readonly imported: number;
+  /** Files this model needs in all (1 for whisper, 4 for a Parakeet bundle). */
+  readonly total: number;
+  /** The directory the matches came from; null when none. */
+  readonly sourceDir: string | null;
+}
+
 
 export interface LocalModelsState {
   readonly models: ReadonlyArray<LocalModel>;
@@ -295,6 +338,11 @@ export interface DeviceSettings {
    * honored in local mode. The setting does not yet have a UI.
    */
   readonly telemetryOptOut: boolean;
+  /**
+   * Keep the meeting audio after a recording transcribes (mirrors
+   * desktop-contracts). Web: a dead control like every other desktop setting.
+   */
+  readonly keepAudio: boolean;
   /** Transcription engine choice. Main resolves the effective engine. */
   readonly transcription: TranscriptionSetting;
   /** AI provider choice. Main resolves the model per request. */
@@ -321,8 +369,9 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   autoExpandOnRecording: false,
   dockContentProtection: false,
   telemetryOptOut: false,
+  keepAudio: true,
   transcription: { engine: 'cloud', modelId: null, byokBaseUrl: null, byokModel: null },
-  ai: { provider: 'openai', model: null, baseUrl: null },
+  ai: { provider: 'openai', model: null, baseUrl: null, cliCommand: null, cliEffort: null },
 };
 
 export interface DesktopCapabilityPort {
@@ -369,6 +418,11 @@ export interface DesktopCapabilityPort {
   /** Reveal the app log file for diagnostics. */
   exportLogs(): Promise<void>;
   /**
+   * Open the folder holding kept meeting audio. Takes no path — main opens the
+   * one directory it owns. Web: inert no-op.
+   */
+  revealAudio(): Promise<void>;
+  /**
    * Pop a note out into the floating note window (gated on
    * `has("floating-note")`). Fire-and-forget — the float window opening IS the
    * feedback. Web: inert no-op (the button never renders).
@@ -407,6 +461,15 @@ export interface DesktopCapabilityPort {
     download(modelId: string): Promise<void>;
     cancelDownload(modelId: string): Promise<void>;
     delete(modelId: string): Promise<void>;
+    /**
+     * Reuse a copy of the weights that is already on this device: `browse`
+     * opens a folder picker, otherwise main scans the model directories it
+     * knows about. Only files whose SHA-1 matches the catalogue pin are
+     * adopted, and they are LINKED, never copied — no second 660 MB on disk.
+     * Web: `not-found`.
+     */
+    import(modelId: string, browse: boolean): Promise<LocalModelImportResult>;
+
     subscribe(listener: (state: LocalModelsState) => void): () => void;
   };
   /**

@@ -148,6 +148,16 @@ export const CHANNELS = {
   modelsCancelDownload: 'models:cancelDownload',
   /** invoke(ModelRequest) → void. Delete an installed model (file + row). */
   modelsDelete: 'models:delete',
+  /**
+   * invoke(ModelImportRequest) → ModelImportResult. Adopt a copy of the model
+   * that already exists on this device instead of downloading it: main scans
+   * (known model directories, or a folder the user picks when `browse`) for
+   * files matching the pinned SHA-1s and links the matches into modelsDir.
+   * Unlike the other model verbs this one ANSWERS — the user is waiting on a
+   * yes/no, and "nothing matched" is not a state the snapshot can express.
+   */
+  modelsImport: 'models:import',
+
   /** push main→renderer: ModelsStateView fan-out on any change (throttled progress). */
   modelsStateChanged: 'models:stateChanged',
   /** invoke → UpdateCheckResult. Trigger an update check; disabled builds return `disabled`. */
@@ -162,6 +172,12 @@ export const CHANNELS = {
   updaterDismissPrompt: 'updater:dismissPrompt',
   /** invoke → void. Reveal the app log file for diagnostics. */
   capabilityExportLogs: 'capability:exportLogs',
+  /**
+   * invoke → void. Open the kept-meeting-audio folder in the OS file browser.
+   * NO ARGUMENT on purpose: main opens AppConfig.audioDir, never a path a
+   * renderer named.
+   */
+  capabilityRevealAudio: 'capability:revealAudio',
   /** invoke → void. Relaunch without clearing any device state. */
   capabilityRestartApp: 'capability:restartApp',
   /**
@@ -845,21 +861,52 @@ export const DEFAULT_TRANSCRIPTION_SETTING: TranscriptionSetting = {
 // ---------------------------------------------------------------------------
 // AI provider. The language-model provider used by the local Ask/Skills lanes:
 // a BYO key (OpenAI, Anthropic, any
-// OpenAI-compatible endpoint) or a local Ollama runtime. ONE record, like the
+// OpenAI-compatible endpoint), a local Ollama runtime, or `cli` — an agent CLI
+// already installed and signed in on this machine (Claude Code, Codex,
+// opencode, cursor-agent, or a command the user supplies). ONE record, like the
 // transcription setting: `model` is the provider's model id (null = the
 // provider default), `baseUrl` the endpoint for openai-compatible / ollama
 // (null = the provider default). API keys are NOT here — they live in the
 // SecureStore, one slot per provider kind, and never cross to the renderer.
+//
+// `cliCommand` is the `cli` provider's escape hatch: a command template whose
+// `{prompt}` placeholder (or, with no placeholder, stdin) carries the prompt.
+// It is NOT a secret, but it IS an execution surface — main resolves it through
+// a strict tokenizer and never through a shell. `.default(null)` so a record
+// persisted before this field existed still parses (a failed parse would drop
+// the user's whole provider choice back to the default).
 // ---------------------------------------------------------------------------
 
-export const aiProviderKindSchema = z.enum(['openai', 'anthropic', 'openai-compatible', 'ollama']);
+export const aiProviderKindSchema = z.enum([
+  'openai',
+  'anthropic',
+  'openai-compatible',
+  'ollama',
+  'cli',
+]);
 export type AiProviderKind = z.infer<typeof aiProviderKindSchema>;
+
+/**
+ * Claude Code's `--effort` vocabulary. Kept here because the renderer offers
+ * these and main spends them; other CLIs declare their own support in the
+ * descriptor table, and a CLI with no effort control simply ignores the value.
+ */
+export const cliEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
+export type CliEffort = z.infer<typeof cliEffortSchema>;
 
 export const aiProviderSettingSchema = z
   .object({
     provider: aiProviderKindSchema,
     model: z.string().nullable(),
     baseUrl: z.string().nullable(),
+    cliCommand: z.string().nullable().default(null),
+    /**
+     * Reasoning effort for the `cli` provider, or null for the CLI's own
+     * default. An ENUM, not a free string: the value becomes an argv token, and
+     * only levels a CLI actually publishes may reach a spawn. `.default(null)`
+     * so a record written before this existed still parses.
+     */
+    cliEffort: cliEffortSchema.nullable().default(null),
   })
   .strip();
 export type AiProviderSetting = z.infer<typeof aiProviderSettingSchema>;
@@ -868,6 +915,8 @@ export const DEFAULT_AI_PROVIDER_SETTING: AiProviderSetting = {
   provider: 'openai',
   model: null,
   baseUrl: null,
+  cliCommand: null,
+  cliEffort: null,
 };
 
 /**
@@ -906,6 +955,17 @@ export const deviceSettingsSchema = z
      * local mode honors it.
      */
     telemetryOptOut: z.boolean(),
+    /**
+     * Keep the meeting audio after a recording transcribes.
+     *
+     * The WAVs are written during capture either way — they are the crash
+     * insurance the recovery drain replays. This decides what happens at
+     * cleanup: OFF deletes them the moment the transcript is durable, ON moves
+     * them to AppConfig.audioDir. Dual capture writes two 48 kHz 16-bit mono
+     * tracks, ~11.5 MB per minute together, and nothing prunes them — which is
+     * the whole reason this is a switch and not the unconditional behaviour.
+     */
+    keepAudio: z.boolean(),
     /** Transcription engine choice — see transcriptionSettingSchema. */
     transcription: transcriptionSettingSchema,
     /** AI provider choice — see aiProviderSettingSchema. */
@@ -936,6 +996,7 @@ export const deviceSettingsPatchSchema = z
     autoExpandOnRecording: z.boolean().optional(),
     dockContentProtection: z.boolean().optional(),
     telemetryOptOut: z.boolean().optional(),
+    keepAudio: z.boolean().optional(),
     transcription: transcriptionSettingSchema.optional(),
     ai: aiProviderSettingSchema.optional(),
   })
@@ -958,6 +1019,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   autoExpandOnRecording: false,
   dockContentProtection: false,
   telemetryOptOut: false,
+  keepAudio: true,
   transcription: DEFAULT_TRANSCRIPTION_SETTING,
   ai: DEFAULT_AI_PROVIDER_SETTING,
 };
@@ -1134,8 +1196,13 @@ export type UpdateStateView = z.infer<typeof updateStateViewSchema>;
 export const modelRequestSchema = z.object({ modelId: z.string().min(1) }).strict();
 export type ModelRequest = z.infer<typeof modelRequestSchema>;
 
-/** What a catalogue entry is for: whisper decoder weights, or VAD weights. */
-export const modelKindSchema = z.enum(['whisper', 'vad']);
+/**
+ * What a catalogue entry is for: whisper decoder weights, VAD weights, or one
+ * file of a Parakeet model. A Parakeet model is FOUR files (encoder, decoder,
+ * joiner, tokens) that install and verify independently but are selected as
+ * one — see MODEL_BUNDLES in the desktop's model catalogue.
+ */
+export const modelKindSchema = z.enum(['whisper', 'vad', 'parakeet']);
 export type ModelKind = z.infer<typeof modelKindSchema>;
 
 export const modelDownloadStatusSchema = z.enum([
@@ -1188,9 +1255,50 @@ export const modelViewSchema = z
     installed: z.boolean(),
     installedAt: z.string().nullable(),
     download: modelDownloadViewSchema.nullable(),
+    /**
+     * True when the weights are a LINK to a copy that lives elsewhere on the
+     * device (models:import), not bytes this app downloaded. The screen says so
+     * before deleting, because deleting only drops the link.
+     */
+    linked: z.boolean(),
   })
   .strip();
 export type ModelView = z.infer<typeof modelViewSchema>;
+
+/**
+ * Where a `models:import` attempt ended up. `partial` is a real outcome, not a
+ * failure: a copy on disk may hold three of a Parakeet model's four files, and
+ * the three that matched are kept — the rest download normally.
+ */
+export const modelImportOutcomeSchema = z.enum([
+  'imported',
+  'partial',
+  'not-found',
+  'cancelled',
+  'already-installed',
+  'unknown-model',
+  'io',
+]);
+export type ModelImportOutcome = z.infer<typeof modelImportOutcomeSchema>;
+
+export const modelImportResultSchema = z
+  .object({
+    outcome: modelImportOutcomeSchema,
+    /** Files linked from the existing copy. */
+    imported: z.number().int().nonnegative(),
+    /** Files this model needs in all (1 for whisper, 4 for a Parakeet bundle). */
+    total: z.number().int().nonnegative(),
+    /** The directory the matches came from — shown back to the user; null when none. */
+    sourceDir: z.string().nullable(),
+  })
+  .strip();
+export type ModelImportResult = z.infer<typeof modelImportResultSchema>;
+
+/** `browse` opens the folder picker; false scans the known model directories. */
+export const modelImportRequestSchema = z
+  .object({ modelId: z.string().min(1), browse: z.boolean() })
+  .strict();
+export type ModelImportRequest = z.infer<typeof modelImportRequestSchema>;
 
 /**
  * The snapshot crossing models:getState / models:stateChanged. `.strip()` like
@@ -1299,6 +1407,12 @@ export const parseDeviceSettings = (value: unknown): ParseResult<DeviceSettings>
 
 export const parseModelRequest = (value: unknown): ParseResult<ModelRequest> =>
   toParseResult(modelRequestSchema.safeParse(value));
+
+export const parseModelImportRequest = (value: unknown): ParseResult<ModelImportRequest> =>
+  toParseResult(modelImportRequestSchema.safeParse(value));
+
+export const parseModelImportResult = (value: unknown): ParseResult<ModelImportResult> =>
+  toParseResult(modelImportResultSchema.safeParse(value));
 
 export const parseTranscriptionByokKeyRequest = (
   value: unknown
@@ -1435,6 +1549,12 @@ export interface MainWindowModelsApi {
   readonly download: (request: ModelRequest) => Promise<void>;
   readonly cancelDownload: (request: ModelRequest) => Promise<void>;
   readonly delete: (request: ModelRequest) => Promise<void>;
+  /**
+   * Adopt an existing on-device copy instead of downloading. ANSWERS (the user
+   * is waiting), unlike the fire-and-forget verbs above.
+   */
+  readonly import: (request: ModelImportRequest) => Promise<ModelImportResult>;
+
   /** Live snapshot pushes; replays the latest to a late subscriber. */
   readonly onStateChanged: (listener: (state: ModelsStateView) => void) => () => void;
 }
@@ -1458,6 +1578,8 @@ export interface MainWindowCapabilitiesApi {
   /** Dismiss the current update prompt (force is non-dismissable). */
   readonly dismissUpdatePrompt: () => Promise<void>;
   readonly exportLogs: () => Promise<void>;
+  /** Open the kept-meeting-audio folder (main supplies the path). */
+  readonly revealAudio: () => Promise<void>;
   /** Relaunch without clearing settings, IndexedDB, or recording recovery data. */
   readonly restartApp: () => Promise<void>;
   /** The device reset; with `{ mode }` the mode switch. */

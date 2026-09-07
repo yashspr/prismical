@@ -37,9 +37,20 @@ import { makeTestLogger, testConfigLayer } from '../helpers/test-layers';
 import { OperationalDb, type LocalModelRow } from '../../src/main/infra/operational-db/service';
 import {
   MODEL_CATALOGUE,
+  PARAKEET_V2_MODEL_ID,
+  PARAKEET_V3_MODEL_ID,
   RECOMMENDED_MODEL_ID,
   VAD_MODEL_ID,
 } from '../../src/main/domains/models/catalogue';
+
+import {
+  bundleFor,
+  bundlePartIds,
+  bundleSizeBytes,
+  MODEL_BUNDLES,
+  type ModelBundle,
+} from '../../src/main/domains/models/bundles';
+
 import type { ModelCatalogueEntry } from '../../src/main/domains/models/catalogue';
 import { makeModelManagerLive } from '../../src/main/domains/models/live';
 import { ModelManager, type ModelManagerApi } from '../../src/main/domains/models/service';
@@ -182,12 +193,18 @@ const build = (options: {
   readonly modelsDir: string;
   readonly rows?: ReadonlyArray<LocalModelRow>;
   readonly freeBytes?: () => number;
+  readonly bundles?: ReadonlyArray<ModelBundle>;
+  readonly externalRoots?: ReadonlyArray<string>;
 }) => {
   const logger = makeTestLogger();
   const db = makeFakeOperationalDb({}, { localModels: options.rows ?? [] });
   const layer = makeModelManagerLive({
     catalogue: options.catalogue,
     probe: { freeBytes: async () => options.freeBytes?.() ?? Number.MAX_SAFE_INTEGER },
+    bundles: options.bundles,
+    // Never the real machine's model directories: an import test must not
+    // depend on what else this computer happens to have installed.
+    externalRoots: options.externalRoots ?? [],
   }).pipe(
     Layer.provide(testConfigLayer({ modelsDir: options.modelsDir })),
     Layer.provide(db.layer),
@@ -233,8 +250,99 @@ const awaitBootReconcile = (logger: ReturnType<typeof makeTestLogger>) =>
 const exists = (file: string) => fs.existsSync(file);
 const fileSha1 = (file: string) => sha1(fs.readFileSync(file));
 
+/**
+ * [catalogue id, local filename, upstream filename, sha1, bytes] per Parakeet
+ * bundle. Kept beside the whisper pins so a silent catalogue edit fails here
+ * rather than at a user's first recording.
+ *
+ * v2's pins were verified byte-identical between the HuggingFace repo and
+ * k2-fsa's own GitHub release tarball; v3's against HuggingFace's published
+ * object ids (sha256 for the three LFS graphs, the git blob oid for tokens).
+ */
+const PARAKEET_V2_PINS: ReadonlyArray<[string, string, string, string, number]> = [
+  [
+    'parakeet-tdt-0.6b-v2-encoder',
+    'parakeet-tdt-0.6b-v2-encoder.int8.onnx',
+    'encoder.int8.onnx',
+    '3c8e9e1f59182fe85aab95d354567bef2722e549',
+    652_184_296,
+  ],
+  [
+    'parakeet-tdt-0.6b-v2-decoder',
+    'parakeet-tdt-0.6b-v2-decoder.int8.onnx',
+    'decoder.int8.onnx',
+    '7d0f5c484bd76a6ad071084912604efe49bdedb1',
+    7_257_753,
+  ],
+  [
+    'parakeet-tdt-0.6b-v2-joiner',
+    'parakeet-tdt-0.6b-v2-joiner.int8.onnx',
+    'joiner.int8.onnx',
+    'e932afdd30b7adddece855983d208bdb262f09bb',
+    1_739_080,
+  ],
+  [
+    'parakeet-tdt-0.6b-v2-tokens',
+    'parakeet-tdt-0.6b-v2-tokens.txt',
+    'tokens.txt',
+    '9dc2ee79b820d18d5683aca253edd1987a827d24',
+    9_384,
+  ],
+];
+
+const PARAKEET_V3_PINS: ReadonlyArray<[string, string, string, string, number]> = [
+  [
+    'parakeet-tdt-0.6b-v3-encoder',
+    'parakeet-tdt-0.6b-v3-encoder.int8.onnx',
+    'encoder.int8.onnx',
+    '0a3010096c5111233f51e3e096f229e637c0db73',
+    652_184_281,
+  ],
+  [
+    'parakeet-tdt-0.6b-v3-decoder',
+    'parakeet-tdt-0.6b-v3-decoder.int8.onnx',
+    'decoder.int8.onnx',
+    '311de941f84e4410718dc34c26779db287b77670',
+    11_845_275,
+  ],
+  [
+    'parakeet-tdt-0.6b-v3-joiner',
+    'parakeet-tdt-0.6b-v3-joiner.int8.onnx',
+    'joiner.int8.onnx',
+    'e90410ef09927c1d3f327b885e055935d24ebb57',
+    6_355_277,
+  ],
+  [
+    'parakeet-tdt-0.6b-v3-tokens',
+    'parakeet-tdt-0.6b-v3-tokens.txt',
+    'tokens.txt',
+    'cffaddf7361fbb9cdbe57ad1f53bfeea94489f02',
+    93_939,
+  ],
+];
+
+/** Both Parakeet bundles: [bundle id, upstream repo slug, pins, total bytes]. */
+const PARAKEET_BUNDLES: ReadonlyArray<
+  [string, string, ReadonlyArray<[string, string, string, string, number]>, number]
+> = [
+  [
+    PARAKEET_V2_MODEL_ID,
+    'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8',
+    PARAKEET_V2_PINS,
+    661_190_513,
+  ],
+  [
+    PARAKEET_V3_MODEL_ID,
+    'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8',
+    PARAKEET_V3_PINS,
+    670_478_772,
+  ],
+];
+
+const PARAKEET_PINS = [...PARAKEET_V2_PINS, ...PARAKEET_V3_PINS];
+
 describe('ModelManager catalogue', () => {
-  it('ships six multilingual ggml entries, the recommended English base, and the Silero VAD entry', () => {
+  it('ships six multilingual ggml entries, the recommended English base, the Silero VAD entry, and the four Parakeet files', () => {
     const hf = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
     const byId = Object.fromEntries(MODEL_CATALOGUE.map(entry => [entry.id, entry]));
     const pins: Array<[string, string, string]> = [
@@ -250,7 +358,7 @@ describe('ModelManager catalogue', () => {
       ],
       ['whisper-base-en', 'ggml-base.en.bin', '137c40403d78fd54d454da0f9bd998f78703390c'],
     ];
-    assert.strictEqual(MODEL_CATALOGUE.length, pins.length + 1);
+    assert.strictEqual(MODEL_CATALOGUE.length, pins.length + 1 + PARAKEET_PINS.length);
     for (const [id, filename, hash] of pins) {
       const entry = byId[id];
       assert.isDefined(entry, id);
@@ -281,7 +389,41 @@ describe('ModelManager catalogue', () => {
       [RECOMMENDED_MODEL_ID]
     );
     assert.strictEqual(byId[RECOMMENDED_MODEL_ID]?.sizeBytes, 147_964_211);
-    assert.strictEqual(new Set(MODEL_CATALOGUE.map(entry => entry.filename)).size, pins.length + 1);
+    assert.strictEqual(
+      new Set(MODEL_CATALOGUE.map(entry => entry.filename)).size,
+      pins.length + 1 + PARAKEET_PINS.length
+    );
+
+    // Each Parakeet bundle's four files, under the same link-only rule as the
+    // ggml entries.
+    for (const [bundleId, repo, pins, totalBytes] of PARAKEET_BUNDLES) {
+      const parakeetHf = `https://huggingface.co/csukuangfj/${repo}/resolve/main`;
+      for (const [id, filename, remote, hash, size] of pins) {
+        const entry = byId[id];
+        assert.isDefined(entry, id);
+        assert.strictEqual(entry?.filename, filename);
+        assert.strictEqual(entry?.sha1, hash);
+        assert.strictEqual(entry?.downloadUrl, `${parakeetHf}/${remote}`);
+        assert.strictEqual(entry?.kind, 'parakeet');
+        assert.strictEqual(entry?.sizeBytes, size);
+        // A part is never independently recommended — the BUNDLE is what the
+        // settings screen offers, and a lone encoder is not a usable model.
+        assert.notStrictEqual(entry?.recommended, true);
+      }
+      // The bundle names exactly those four, and nothing outside the catalogue.
+      const bundle = bundleFor(bundleId);
+      assert.isNotNull(bundle, bundleId);
+      assert.deepStrictEqual([...bundlePartIds(bundle!)].sort(), pins.map(([id]) => id).sort());
+      assert.strictEqual(bundleSizeBytes(bundle!), totalBytes);
+    }
+
+    // Exactly one Parakeet bundle is recommended, and it is the multilingual
+    // one: a meeting recorder defaults to the model that survives a speaker
+    // switching language.
+    assert.deepStrictEqual(
+      MODEL_BUNDLES.filter(bundle => bundle.recommended).map(bundle => bundle.id),
+      [PARAKEET_V3_MODEL_ID]
+    );
   });
 });
 

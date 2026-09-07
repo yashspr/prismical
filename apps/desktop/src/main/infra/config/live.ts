@@ -150,6 +150,9 @@ export const makeAppConfig = (): AppConfigService => {
   // Recovery WAVs stay under the real profile in every build; the destructive
   // reset purges this tree, so the path is resolved ONCE here.
   const recoveryDir = path.join(userDataDir, 'recovery');
+  // Kept audio, when the preference is on. Same profile as recoveryDir so the
+  // drain's retention step is a rename, not a copy.
+  const audioDir = path.join(userDataDir, 'audio');
 
   const endpoints = readEndpoints(isPackaged);
 
@@ -166,6 +169,7 @@ export const makeAppConfig = (): AppConfigService => {
     cloudCacheDir,
     modelsDir,
     recoveryDir,
+    audioDir,
     rendererDevServerUrl: mainWindowDevServerUrl(),
     endpoints,
     auth: readAuth(isPackaged, endpoints),

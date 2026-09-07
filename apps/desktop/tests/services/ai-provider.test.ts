@@ -13,6 +13,7 @@ import {
   ollamaHost,
   type FetchLike,
 } from '../../src/main/domains/ai-provider/catalogue';
+import type { BinaryResolver } from '../../src/main/domains/ai-provider/cli/binary-path';
 import { localInstanceId, providerOfInstanceId } from '../../src/main/domains/ai-provider/instances';
 import { makeAiProviderLive } from '../../src/main/domains/ai-provider/live';
 import { aiProviderSecretKey } from '../../src/main/domains/ai-provider/secrets';
@@ -39,12 +40,31 @@ const makeFetch = (routes: Record<string, (init?: RequestInit) => Response | Pro
   return { fetchFn, calls };
 };
 
-const build = (fetchFn: FetchLike, options: { toolSupportTtlMs?: number } = {}) => {
+/**
+ * The `cli` provider detects by probing PATH, so a suite that let it use the
+ * real resolver would pass or fail on whether the machine running it happens to
+ * have Claude Code installed. Every test gets a resolver that finds nothing
+ * unless it says otherwise.
+ */
+const noCliResolver: BinaryResolver = { find: () => Promise.resolve(null) };
+
+/** A resolver that reports exactly the named binaries as installed. */
+const stubCliResolver = (installed: Record<string, string>): BinaryResolver => ({
+  find: binary => Promise.resolve(installed[binary] ?? null),
+});
+
+type BuildOptions = { toolSupportTtlMs?: number; binaryResolver?: BinaryResolver };
+
+const build = (fetchFn: FetchLike, options: BuildOptions = {}) => {
   const logger = makeTestLogger();
   const db = makeFakeOperationalDb();
   const settings = SettingsServiceLive.pipe(Layer.provide(db.layer), Layer.provide(logger.layer));
   const secureStore = fakeSecureStoreLayer();
-  const provider = makeAiProviderLive({ fetchFn, ...options }).pipe(
+  const provider = makeAiProviderLive({
+    fetchFn,
+    binaryResolver: noCliResolver,
+    ...options,
+  }).pipe(
     Layer.provide(testConfigLayer()),
     Layer.provide(settings),
     Layer.provide(secureStore),
@@ -216,7 +236,9 @@ describe('AiProviderLive', () => {
       const ctx = yield* Layer.build(layer);
       const ai = Context.get(ctx, AiProvider);
       const settings = Context.get(ctx, SettingsService);
-      yield* settings.set({ ai: { provider: 'ollama', model: null, baseUrl: null } });
+      yield* settings.set({
+        ai: { provider: 'ollama', model: null, baseUrl: null, cliCommand: null, cliEffort: null },
+      });
 
       const resolved = yield* ai.resolve();
       assert.strictEqual(resolved.provider, 'ollama');
@@ -238,7 +260,9 @@ describe('AiProviderLive', () => {
       const secrets = Context.get(ctx, SecureStore);
       const settings = Context.get(ctx, SettingsService);
       yield* secrets.setSecret(aiProviderSecretKey('anthropic'), 'sk-ant');
-      yield* settings.set({ ai: { provider: 'openai', model: 'gpt-5-mini', baseUrl: null } });
+      yield* settings.set({
+        ai: { provider: 'openai', model: 'gpt-5-mini', baseUrl: null, cliCommand: null, cliEffort: null },
+      });
 
       const rows = yield* ai.instances;
       assert.deepStrictEqual(
@@ -292,6 +316,8 @@ describe('AiProviderLive', () => {
         provider: 'anthropic',
         model: 'claude-opus-5',
         baseUrl: null,
+        cliCommand: null,
+        cliEffort: null,
       });
 
       yield* ai.rememberToolSupport('anthropic', 'claude-opus-5', 'auto-only');
@@ -312,14 +338,26 @@ describe('AiProviderLive', () => {
       const ai = Context.get(ctx, AiProvider);
       const settings = Context.get(ctx, SettingsService);
       yield* settings.set({
-        ai: { provider: 'openai-compatible', model: 'local-model', baseUrl: 'http://a.local/v1' },
+        ai: {
+          provider: 'openai-compatible',
+          model: 'local-model',
+          baseUrl: 'http://a.local/v1',
+          cliCommand: null,
+          cliEffort: null,
+        },
       });
       // A native verdict never expires.
       yield* ai.rememberToolSupport('openai-compatible', 'local-model', 'native');
       assert.strictEqual((yield* ai.resolve()).toolSupport, 'native');
       // The same model id on ANOTHER server is a different memo entry.
       yield* settings.set({
-        ai: { provider: 'openai-compatible', model: 'local-model', baseUrl: 'http://b.local/v1' },
+        ai: {
+          provider: 'openai-compatible',
+          model: 'local-model',
+          baseUrl: 'http://b.local/v1',
+          cliCommand: null,
+          cliEffort: null,
+        },
       });
       assert.strictEqual((yield* ai.resolve()).toolSupport, 'unknown');
       // A downgrade ages out (ttl 0 → immediately) so the ladder re-probes.
@@ -327,7 +365,13 @@ describe('AiProviderLive', () => {
       assert.strictEqual((yield* ai.resolve()).toolSupport, 'unknown');
       // forget drops the provider's entries entirely.
       yield* settings.set({
-        ai: { provider: 'openai-compatible', model: 'local-model', baseUrl: 'http://a.local/v1' },
+        ai: {
+          provider: 'openai-compatible',
+          model: 'local-model',
+          baseUrl: 'http://a.local/v1',
+          cliCommand: null,
+          cliEffort: null,
+        },
       });
       assert.strictEqual((yield* ai.resolve()).toolSupport, 'native');
       yield* ai.forget('openai-compatible');
@@ -368,6 +412,120 @@ describe('AiProviderLive', () => {
       yield* ai.listModels('openai');
       yield* ai.resolve();
       assert.notInclude(JSON.stringify(logger.entries), SENTINEL);
+    }).pipe(Effect.scoped)
+  );
+});
+
+describe('the cli provider through AiProviderLive', () => {
+  const claudeInstalled = { claude: '/opt/homebrew/bin/claude' };
+
+  it.effect('is configured when a CLI is on the search path, and lists it bare-id first', () =>
+    Effect.gen(function* () {
+      const { fetchFn, calls } = makeFetch({});
+      const { layer } = build(fetchFn, { binaryResolver: stubCliResolver(claudeInstalled) });
+      const ctx = yield* Layer.build(layer);
+      const ai = Context.get(ctx, AiProvider);
+
+      const listing = yield* ai.listModels('cli');
+      assert.isNull(listing.error);
+      assert.strictEqual(listing.models[0], 'claude');
+      // Detection is local: a catalogue read must not touch the network.
+      assert.lengthOf(calls, 0);
+    }).pipe(Effect.scoped)
+  );
+
+  it.effect('is not-configured when nothing is installed', () =>
+    Effect.gen(function* () {
+      const { fetchFn } = makeFetch({});
+      const { layer } = build(fetchFn);
+      const ctx = yield* Layer.build(layer);
+      assert.deepStrictEqual(yield* Context.get(ctx, AiProvider).listModels('cli'), {
+        models: [],
+        error: 'not-configured',
+      });
+    }).pipe(Effect.scoped)
+  );
+
+  it.effect('appears in the instance rows once a CLI is detected', () =>
+    Effect.gen(function* () {
+      const { fetchFn } = makeFetch({});
+      const { layer } = build(fetchFn, { binaryResolver: stubCliResolver(claudeInstalled) });
+      const ctx = yield* Layer.build(layer);
+      const ai = Context.get(ctx, AiProvider);
+      const settings = Context.get(ctx, SettingsService);
+      yield* settings.set({
+        ai: { provider: 'cli', model: null, baseUrl: null, cliCommand: null, cliEffort: null },
+      });
+
+      const rows = yield* ai.instances;
+      const cli = rows.find(row => row.provider === 'cli');
+      assert.isDefined(cli);
+      assert.strictEqual(cli.instanceId, localInstanceId('cli'));
+      assert.strictEqual(cli.label, 'Local CLI agent');
+      assert.include(cli.models, 'claude');
+    }).pipe(Effect.scoped)
+  );
+
+  it.effect('resolves with tool support pinned to none — a CLI has no tool-call channel', () =>
+    Effect.gen(function* () {
+      const { fetchFn } = makeFetch({});
+      const { layer } = build(fetchFn, { binaryResolver: stubCliResolver(claudeInstalled) });
+      const ctx = yield* Layer.build(layer);
+      const ai = Context.get(ctx, AiProvider);
+      const settings = Context.get(ctx, SettingsService);
+      yield* settings.set({
+        ai: { provider: 'cli', model: 'claude/opus', baseUrl: null, cliCommand: null, cliEffort: null },
+      });
+
+      const resolved = yield* ai.resolve();
+      assert.strictEqual(resolved.provider, 'cli');
+      assert.strictEqual(resolved.modelId, 'claude/opus');
+      // The ladder must go straight to its JSON-in-text rung, never spend a
+      // run probing for a forced tool call the CLI can never make.
+      assert.strictEqual(resolved.toolSupport, 'none');
+    }).pipe(Effect.scoped)
+  );
+
+  it.effect('falls back to the first catalogue entry when no model is pinned', () =>
+    Effect.gen(function* () {
+      const { fetchFn } = makeFetch({});
+      const { layer } = build(fetchFn, { binaryResolver: stubCliResolver(claudeInstalled) });
+      const ctx = yield* Layer.build(layer);
+      const ai = Context.get(ctx, AiProvider);
+      const settings = Context.get(ctx, SettingsService);
+      yield* settings.set({
+        ai: { provider: 'cli', model: null, baseUrl: null, cliCommand: null, cliEffort: null },
+      });
+      assert.deepStrictEqual(yield* ai.defaultSelection, {
+        instanceId: localInstanceId('cli'),
+        modelId: 'claude',
+      });
+    }).pipe(Effect.scoped)
+  );
+
+  it.effect('clears the custom command when the default moves to another provider', () =>
+    Effect.gen(function* () {
+      const { fetchFn } = makeFetch({ 'api.openai.com': () => json({ data: [] }) });
+      const { layer } = build(fetchFn, { binaryResolver: stubCliResolver(claudeInstalled) });
+      const ctx = yield* Layer.build(layer);
+      const ai = Context.get(ctx, AiProvider);
+      const settings = Context.get(ctx, SettingsService);
+      yield* settings.set({
+        ai: {
+          provider: 'cli',
+          model: 'custom',
+          baseUrl: null,
+          cliCommand: 'my-agent --print',
+          cliEffort: null,
+        },
+      });
+
+      assert.isTrue(
+        yield* ai.setDefault({ instanceId: localInstanceId('openai'), modelId: 'gpt-5' })
+      );
+      // The template belongs to the cli provider; leaving it armed behind
+      // another provider would silently reapply if the user switched back.
+      assert.isNull((yield* settings.get).ai.cliCommand);
     }).pipe(Effect.scoped)
   );
 });

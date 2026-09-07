@@ -9,6 +9,7 @@
  * configuration persisted in the private outbox, including its original
  * model and BYOK endpoint. Credentials remain in SecureStore.
  */
+import { bundleFor } from '../models/bundles';
 import type { TranscriptionEngine, TranscriptionSetting } from '@prismical/desktop-contracts';
 import type { AppMode } from '../app-mode/service';
 import { RECOMMENDED_MODEL_ID } from '../models/catalogue';
@@ -57,6 +58,16 @@ export const resolveRecordingEngine = (
 export const LOCAL_WHISPER_TRANSCRIPTION_CONFIG = (modelId: string) =>
   ({ provider: 'local-whisper', model: `local:${modelId}`, language: 'en' }) as const;
 
+/**
+ * transcriptionConfig for an on-device PARAKEET recording. Same shape and same
+ * `local:` model namespace as the whisper variant — naming the bundle the user
+ * downloaded and picked is fine, and keeping the namespace means the value
+ * survives sync redaction verbatim — but a distinct `provider` so a synced
+ * recording does not claim to have been decoded by whisper.
+ */
+export const LOCAL_PARAKEET_TRANSCRIPTION_CONFIG = (modelId: string) =>
+  ({ provider: 'local-parakeet', model: `local:${modelId}`, language: 'en' }) as const;
+
 /** transcriptionConfig for a desktop-BYOK recording (the key never leaves main). */
 export const BYOK_DESKTOP_TRANSCRIPTION_CONFIG = (byokModel: string | null) =>
   ({ provider: 'byok-desktop', model: byokModel ?? 'unknown', language: 'en' }) as const;
@@ -67,7 +78,10 @@ export const transcriptionConfigFor = (engine: RecordingEngine): Record<string, 
     case 'cloud':
       return MANAGED_TRANSCRIPTION_CONFIG;
     case 'local':
-      return LOCAL_WHISPER_TRANSCRIPTION_CONFIG(engine.modelId);
+      // 'local' covers both on-device engines; the chosen model says which.
+      return bundleFor(engine.modelId)?.kind === 'parakeet'
+        ? LOCAL_PARAKEET_TRANSCRIPTION_CONFIG(engine.modelId)
+        : LOCAL_WHISPER_TRANSCRIPTION_CONFIG(engine.modelId);
     case 'byok':
       return BYOK_DESKTOP_TRANSCRIPTION_CONFIG(engine.byokModel);
   }

@@ -32,6 +32,7 @@ import { AppModeSetting } from "./settings/app-mode-setting";
 import { LocalModelsScreen } from "./settings/local-models-screen";
 import { AiProviderSetting } from "./settings/ai-provider-setting";
 import { TranscriptionEngineSetting } from "./settings/transcription-engine-setting";
+import { RecordingAudioSetting } from "./settings/recording-audio-setting";
 import { AppShell } from "@prismical/app-ui/shell/app-shell";
 import { FeatureGate } from "@prismical/app-ui/shell/feature-gate";
 import { HomeScreen } from "@prismical/app-ui/screens/home-screen";
@@ -187,7 +188,16 @@ function SkillEditorRoute() {
 // desktop-owned engine card through its named `engineSettings` slot — web
 // passes nothing and keeps its own controls.
 function TranscriptionRoute() {
-  return <TranscriptionScreen engineSettings={<TranscriptionEngineSetting />} />;
+  return (
+    <TranscriptionScreen
+      engineSettings={
+        <>
+          <TranscriptionEngineSetting />
+          <RecordingAudioSetting />
+        </>
+      }
+    />
+  );
 }
 
 // The shared AI-models screen renders the desktop-owned

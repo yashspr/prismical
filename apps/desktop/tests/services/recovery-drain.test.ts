@@ -38,7 +38,11 @@ import { SyncTranscriptSegmentCreateRequestSchema } from '@prismical/api-contrac
 import { WorkspaceIdentity, type RecoveryOwner } from '../../src/main/runtime/workspace-identity';
 import { AppModeService, type AppMode } from '../../src/main/domains/app-mode/service';
 import { TRANSCRIPT_SEGMENTS_PATH } from '../../src/main/domains/recording/segment-mirror';
-import { RECOMMENDED_MODEL_ID } from '../../src/main/domains/models/catalogue';
+import {
+  PARAKEET_V3_MODEL_ID,
+  RECOMMENDED_MODEL_ID,
+} from '../../src/main/domains/models/catalogue';
+import { bundleFor, bundlePartIds } from '../../src/main/domains/models/bundles';
 import { resolveRecordingEngine } from '../../src/main/domains/transcriber/engine';
 import { mintChunkSegment } from '../../src/main/domains/transcriber/segment';
 import {
@@ -126,6 +130,8 @@ interface EnvOptions {
   readonly mode?: AppMode;
   readonly transcription?: Partial<DeviceSettings['transcription']>;
   readonly localLane?: Layer.Layer<LocalTranscriberLane, never, MainLogger>;
+  /** DeviceSettings.keepAudio — what the drain does with the WAVs at cleanup. */
+  readonly keepAudio?: boolean;
 }
 
 const buildEnv = (coreLayer: Layer.Layer<WorkspaceBackend>, options: EnvOptions = {}) =>
@@ -150,6 +156,9 @@ const buildEnv = (coreLayer: Layer.Layer<WorkspaceBackend>, options: EnvOptions 
         : { mode: 'cloud', sub: 'account-a', orgId: 'org-a' });
     const envLayer = Layer.mergeAll(
       Layer.succeed(WorkspaceIdentity, owner),
+      // AppConfig is IN the env now, not just provided to the db layers: the
+      // drain reads audioDir from it for the retention step.
+      config,
       OperationalDbLive.pipe(Layer.provide(config), Layer.provide(logger.layer)),
       productDb,
       RecordingStoreLive.pipe(Layer.provide(productDb)),
@@ -159,6 +168,7 @@ const buildEnv = (coreLayer: Layer.Layer<WorkspaceBackend>, options: EnvOptions 
         Layer.provide(logger.layer)
       ),
       makeFakeSettings({
+        ...(options.keepAudio === undefined ? {} : { keepAudio: options.keepAudio }),
         transcription: {
           engine: 'cloud',
           modelId: null,
@@ -1080,6 +1090,120 @@ describe('RecoveryDrain — transcription engine at drain time', () => {
       yield* Scope.close(h.scope, Exit.void);
     })
   );
+
+  // Retention decides CLEANUP, not capture: the WAV pair is written either way
+  // (it is the drain's crash insurance), and keepAudio only chooses between
+  // deleting it and moving it out of the tree the destructive reset purges.
+  const audioFor = (h: { readonly userDataDir: string }, recordingId: string) =>
+    path.join(h.userDataDir, 'audio', recordingId);
+
+  it.effect('keepAudio moves the WAV pair out of recovery instead of deleting it', () =>
+    Effect.gen(function* () {
+      const h = yield* setupWith({ keepAudio: true, transcription: { engine: 'cloud' } });
+      const recordingId = 'rec_keep_audio';
+      const dir = h.recoveryDir(recordingId);
+      yield* writeWav(dir, 'mic', seconds(5));
+      yield* h.insertRecovery({ recordingId, captureMode: 'mic', wavPath: dir });
+      yield* h.db.updateRecoveryOutbox(recordingId, { status: 'interrupted' });
+
+      assert.strictEqual((yield* h.drain()).resolved, 1);
+      const kept = audioFor(h, recordingId);
+      assert.isFalse(fs.existsSync(dir), 'moved out of the recovery tree');
+      assert.isTrue(fs.existsSync(path.join(kept, 'mic.wav')), 'kept under audioDir');
+      // A rename, not a re-encode — the bytes are the finalized WAV.
+      assertWavSamples(fs.readFileSync(path.join(kept, 'mic.wav')), seconds(5).length);
+      yield* Scope.close(h.scope, Exit.void);
+    })
+  );
+
+  it.effect('keepAudio off deletes the WAV pair and writes no audio directory', () =>
+    Effect.gen(function* () {
+      const h = yield* setupWith({ keepAudio: false, transcription: { engine: 'cloud' } });
+      const recordingId = 'rec_drop_audio';
+      const dir = h.recoveryDir(recordingId);
+      yield* writeWav(dir, 'mic', seconds(5));
+      yield* h.insertRecovery({ recordingId, captureMode: 'mic', wavPath: dir });
+      yield* h.db.updateRecoveryOutbox(recordingId, { status: 'interrupted' });
+
+      assert.strictEqual((yield* h.drain()).resolved, 1);
+      assert.isFalse(fs.existsSync(dir));
+      assert.isFalse(fs.existsSync(audioFor(h, recordingId)), 'nothing kept');
+      yield* Scope.close(h.scope, Exit.void);
+    })
+  );
+
+  it.effect('a blocked retention move parks the row and keeps the audio', () =>
+    Effect.gen(function* () {
+      // audioDir occupied by a FILE, so mkdir cannot make the destination.
+      // Retention failure is a file failure like any other: park, retry, and
+      // above all do not delete the audio the user asked to keep.
+      const h = yield* setupWith({ keepAudio: true, transcription: { engine: 'cloud' } });
+      const audioPath = path.join(h.userDataDir, 'audio');
+      fs.writeFileSync(audioPath, 'not a directory');
+      const recordingId = 'rec_keep_blocked';
+      const dir = h.recoveryDir(recordingId);
+      yield* writeWav(dir, 'mic', seconds(5));
+      yield* h.insertRecovery({ recordingId, captureMode: 'mic', wavPath: dir });
+      yield* h.db.updateRecoveryOutbox(recordingId, { status: 'interrupted' });
+
+      assert.strictEqual((yield* h.drain()).parked, 1);
+      const parked = yield* h.db.getRecoveryOutbox(recordingId);
+      assert.strictEqual(parked?.phase, 'cleanup', 'finalized work is not repeated');
+      assert.strictEqual(parked?.lastError, 'recovery-file');
+      assert.isTrue(fs.existsSync(path.join(dir, 'mic.wav')), 'audio retained for the retry');
+
+      // Clear the obstruction: the retry moves it and resolves.
+      fs.rmSync(audioPath);
+      yield* TestClock.adjust(Duration.seconds(30));
+      assert.strictEqual((yield* h.drain()).resolved, 1);
+      assert.isTrue(fs.existsSync(path.join(audioFor(h, recordingId), 'mic.wav')));
+      assert.isNull(yield* h.db.getRecoveryOutbox(recordingId));
+      yield* Scope.close(h.scope, Exit.void);
+    })
+  );
+
+  it.effect("a 'local' Parakeet row drains once its four PARTS are installed", () =>
+    Effect.gen(function* () {
+      // No `local_model` row ever carries a bundle id — the parts each carry
+      // their own — so a drain that matched the selection directly would park
+      // this recording on every pass until the attempt cap failed it, with the
+      // whole model sitting on disk.
+      // The injected lane is deliberately absent: a bundle selection routes to
+      // ParakeetTranscriberLane, not the whisper LocalTranscriberLane this
+      // harness can replace, so the pre-check is asserted through the drain's
+      // own verdict — parked vs resolved — rather than through lane calls.
+      const h = yield* setupWith({
+        transcription: { engine: 'local', modelId: PARAKEET_V3_MODEL_ID },
+      });
+      const parts = bundlePartIds(bundleFor(PARAKEET_V3_MODEL_ID)!);
+      const recordingId = 'rec_parakeet_bundle';
+      const dir = h.recoveryDir(recordingId);
+      yield* writeWav(dir, 'mic', seconds(5));
+      yield* h.insertRecovery({
+        recordingId,
+        captureMode: 'mic',
+        wavPath: dir,
+        engine: 'local',
+      });
+      yield* h.db.updateRecoveryOutbox(recordingId, { status: 'interrupted' });
+
+      // Three of four: a half-installed bundle is still model-missing.
+      for (const partId of parts.slice(0, 3)) yield* installModel(h, partId);
+      const partial = yield* h.drain();
+      assert.strictEqual(partial.parked, 1);
+      assert.strictEqual((yield* h.db.getRecoveryOutbox(recordingId))?.lastError, 'model-missing');
+      assert.isTrue(fs.existsSync(dir), 'WAV retained');
+
+      // The fourth lands → the row clears the pre-check and resolves.
+      yield* installModel(h, parts[3]);
+      yield* TestClock.adjust(Duration.minutes(1));
+      const complete = yield* h.drain();
+      assert.strictEqual(complete.resolved, 1);
+      assert.strictEqual(complete.parked, 0);
+      assert.isFalse(fs.existsSync(dir));
+      yield* Scope.close(h.scope, Exit.void);
+    })
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1518,7 +1642,9 @@ describe('RecoveryDrain processing ownership', () => {
 
   it.effect('server staging retries failed audio cleanup without repeating finalized work', () =>
     Effect.gen(function* () {
-      const h = yield* setup;
+      // keepAudio off: this pins the DELETE path's retry contract. The move
+      // path's is pinned by 'a blocked retention move parks' above.
+      const h = yield* setupWith({ keepAudio: false });
       const recordingId = 'rec_server_cleanup_retry';
       const dir = h.recoveryDir(recordingId);
       yield* writeWav(dir, 'mic', seconds(5));

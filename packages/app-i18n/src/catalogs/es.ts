@@ -2381,8 +2381,16 @@ const es = {
         unsupported: 'La lista de modelos no está disponible para este proveedor.',
       },
       clearKey: 'Borrar clave',
+      cliCommandHelp:
+        'Déjalo vacío para usar una CLI encontrada en este equipo. El prompt se envía por la entrada estándar y el comando se ejecuta directamente, nunca a través de un shell.',
+      cliCommandLabel: 'Comando personalizado',
+      cliCommandPlaceholder: 'my-agent --print',
       description:
         'Elige qué modelo de lenguaje ejecuta Ask, Enhance, Cleanup y Nombrar nota en este dispositivo.',
+      effortDefault: 'Predeterminado (lo decide la CLI)',
+      effortHelp:
+        'Se envía a las CLI que ofrecen un control de esfuerzo, hoy Claude Code. Las que no lo tienen ignoran este valor.',
+      effortLabel: 'Esfuerzo de razonamiento',
       keyMissing: 'No hay ninguna clave guardada en este dispositivo.',
       keySet: 'Hay una clave guardada en este dispositivo. Pega una nueva para reemplazarla.',
       modelLabel: 'Modelo',
@@ -2391,6 +2399,11 @@ const es = {
         anthropic: {
           description: 'Usa tu propia clave de API de Anthropic.',
           label: 'Anthropic',
+        },
+        cli: {
+          description:
+            'Usa un agente de código ya instalado y con sesión iniciada aquí: Claude Code, Codex, opencode o Cursor.',
+          label: 'CLI de agente local',
         },
         ollama: {
           description: 'Un runtime local de Ollama. Nada sale de este equipo.',
@@ -2464,6 +2477,7 @@ const es = {
       delete: 'Eliminar',
       deleteConfirm:
         'El archivo del modelo se elimina de este dispositivo. Puedes volver a descargarlo cuando quieras.',
+      deleteConfirmLinked: 'Estos pesos son un enlace a una copia que ya existía en este dispositivo. Al eliminar el modelo solo se quita el enlace: los archivos originales se quedan donde están.',
       deleteConfirmTitle: '¿Eliminar {{name}}?',
       description:
         'Descarga modelos de reconocimiento de voz para transcribir grabaciones en este dispositivo. Los modelos se obtienen de Hugging Face y se verifican antes de usarse.',
@@ -2477,7 +2491,20 @@ const es = {
         io: 'No se pudo escribir el archivo del modelo.',
         network: 'La descarga falló. Comprueba tu conexión e inténtalo de nuevo.',
       },
+      groupParakeet: 'Parakeet',
+      groupParakeetHint: 'NVIDIA Parakeet TDT: varias veces más rápido que Whisper en CPU y puntúa sobre la marcha. Cada modelo son cuatro archivos que se instalan como uno.',
+      groupWhisper: 'Whisper',
+      groupWhisperHint: 'Un archivo por modelo. Preciso, y más lento cuanto más grande.',
+      importAlready: 'Este modelo ya está instalado.',
+      importBrowse: 'Elegir carpeta…',
+      importDone: 'Se enlazaron {{linked}} de {{total}} archivos desde {{path}}: no hace falta descargar nada.',
+      importFailed: 'Se encontró una copia compatible, pero no se pudo enlazar.',
+      importNotFound: 'No se encontró ninguna copia compatible en este dispositivo. Puedes indicar una carpeta tú mismo.',
+      importPartial: 'Se enlazaron {{linked}} de {{total}} archivos desde {{path}}. Descarga el resto.',
+      importScan: 'Buscar copia existente',
+      importSearching: 'Buscando en este dispositivo…',
       installed: 'Instalado',
+      linked: 'Enlazado',
       loading: 'Cargando modelos…',
       recommended: 'Recomendado',
       retry: 'Reintentar',
@@ -2567,6 +2594,13 @@ const es = {
       silencePause: 'No se oye nada desde hace un rato — pausaremos para ahorrar minutos.',
       stillThere: '¿Sigues ahí?',
       takeNotes: 'Tomar notas',
+    },
+    recordingAudio: {
+      description: 'Qué ocurre con el audio de una reunión una vez transcrito.',
+      keepDescription: 'Las grabaciones se conservan en este dispositivo en lugar de borrarse cuando se guarda la transcripción. Capturar micrófono y audio del sistema a la vez escribe unos 11,5 MB por minuto, y nada elimina los archivos antiguos por ti.',
+      keepLabel: 'Conservar el audio tras la transcripción',
+      reveal: 'Mostrar la carpeta de grabaciones',
+      title: 'Audio de la reunión',
     },
     routeError: {
       description: 'Intenta volver a abrir esta sección.',

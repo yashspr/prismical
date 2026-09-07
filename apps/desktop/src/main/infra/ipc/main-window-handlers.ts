@@ -30,6 +30,7 @@ import {
   parseDeviceSettingsPatch,
   parseFloatOpenRequest,
   parseFloatState,
+  parseModelImportRequest,
   parseModelRequest,
   parseModelsStateView,
   parseOpenStreamRequest,
@@ -60,6 +61,7 @@ import {
   type CollabOpenResponse,
   type DeviceSettings,
   type EnvDescriptor,
+  type ModelImportResult,
   type OpenStreamResponse,
   type PermissionStatuses,
   type SignInResult,
@@ -753,6 +755,55 @@ export const registerMainWindowHandlers: Effect.Effect<void, never, HandlerEnv |
     yield* registerModelVerb(CHANNELS.modelsCancelDownload, 'cancelDownload');
     yield* registerModelVerb(CHANNELS.modelsDelete, 'delete');
 
+    // models:import — reuse weights already on this device instead of
+    // downloading them. Unlike the verbs above this one ANSWERS: the user is
+    // waiting on "did you find it?", and `not-found` is not a state the
+    // snapshot can carry. The folder picker runs HERE, in main, so the path
+    // that gets read off disk is one the OS handed us, never one the renderer
+    // named.
+    yield* acquireHandle(CHANNELS.modelsImport, (event, payload) =>
+      runPromise(
+        validateMainSender(event).pipe(
+          Effect.flatMap((): Effect.Effect<ModelImportResult, PayloadRejected> => {
+            const parsed = parseModelImportRequest(payload);
+            if (!parsed.success) {
+              return log
+                .warn('models:import rejected: invalid payload', { issues: parsed.issues })
+                .pipe(Effect.zipRight(Effect.fail(new PayloadRejected('INVALID_REQUEST'))));
+            }
+            const { modelId, browse } = parsed.data;
+            const chosen = browse
+              ? nativeOs.chooseDirectory('Choose the folder holding the model files')
+              : Effect.succeed(Option.none<string>());
+            return chosen.pipe(
+              Effect.flatMap(dir =>
+                browse && Option.isNone(dir)
+                  ? Effect.succeed<ModelImportResult>({
+                      outcome: 'cancelled',
+                      imported: 0,
+                      total: 0,
+                      sourceDir: null,
+                    })
+                  : models.import(modelId, Option.getOrNull(dir))
+              ),
+              // A picker/scan defect is an edge failure, not a business
+              // outcome: report it as `io` rather than rejecting the invoke.
+              Effect.catchAllDefect(defect =>
+                log.error('models:import defect', { modelId, defect: String(defect) }).pipe(
+                  Effect.as<ModelImportResult>({
+                    outcome: 'io',
+                    imported: 0,
+                    total: 0,
+                    sourceDir: null,
+                  })
+                )
+              )
+            );
+          })
+        )
+      )
+    );
+
     // capability:exportLogs — reveal the electron-log file in the OS file browser.
     // A reveal defect (edge failure) is logged; the sender rejection propagates.
     yield* acquireHandle(CHANNELS.capabilityExportLogs, event =>
@@ -762,6 +813,23 @@ export const registerMainWindowHandlers: Effect.Effect<void, never, HandlerEnv |
             nativeOs.revealLogs.pipe(
               Effect.catchAllDefect(defect =>
                 log.error('capability:exportLogs — reveal failed', { defect: String(defect) })
+              )
+            )
+          )
+        )
+      )
+    );
+
+    // capability:revealAudio — open the kept-audio folder. Zero-arg: the path is
+    // AppConfig's, so no renderer can aim this at a directory of its choosing.
+    // A reveal defect is logged, exactly like exportLogs above.
+    yield* acquireHandle(CHANNELS.capabilityRevealAudio, event =>
+      runPromise(
+        validateMainSender(event).pipe(
+          Effect.zipRight(
+            nativeOs.revealDirectory(config.audioDir).pipe(
+              Effect.catchAllDefect(defect =>
+                log.error('capability:revealAudio — reveal failed', { defect: String(defect) })
               )
             )
           )

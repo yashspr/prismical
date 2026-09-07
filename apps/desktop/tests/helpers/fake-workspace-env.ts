@@ -22,12 +22,15 @@ import { TranscriberLive } from '../../src/main/domains/transcriber/live';
 import {
   ByokTranscriberPlaceholderLive,
   LocalTranscriberPlaceholderLive,
+  ParakeetTranscriberPlaceholderLive,
 } from '../../src/main/domains/transcriber/placeholder';
 import {
   ByokTranscriberLane,
   LocalTranscriberLane,
+  ParakeetTranscriberLane,
   type Transcriber,
 } from '../../src/main/domains/transcriber/service';
+
 import type { WorkspaceBackend } from '../../src/main/domains/transport/service';
 import type { MainLogger } from '../../src/main/infra/logging/service';
 import { SecureStore, type SecureStoreService } from '../../src/main/infra/secure-store/service';
@@ -45,6 +48,16 @@ import {
   WhisperEngineError,
   type WhisperEngineApi,
 } from '../../src/main/infra/whisper/service';
+import type {
+  ParakeetDecodeOptions,
+  ParakeetTranscription,
+} from '../../src/main/infra/parakeet/protocol';
+import {
+  ParakeetEngine,
+  ParakeetEngineError,
+  type ParakeetEngineApi,
+} from '../../src/main/infra/parakeet/service';
+
 
 export interface FakeSettings {
   readonly layer: Layer.Layer<SettingsService>;
@@ -162,7 +175,10 @@ export const fakeModelManagerLayer = (
         download: () => Effect.void,
         cancel: () => Effect.void,
         delete: () => Effect.void,
+        import: () =>
+          Effect.succeed({ outcome: 'not-found', imported: 0, total: 0, sourceDir: null } as const),
         reconcile: Effect.succeed({ removed: 0, adopted: 0, partsDeleted: 0 }),
+
         installedPath: modelId => Effect.succeed(Option.fromNullable(installed[modelId])),
       };
       return api;
@@ -232,6 +248,55 @@ export const makeFakeWhisperEngine = (): FakeWhisperEngine => {
   };
 };
 
+export interface FakeParakeetCall {
+  readonly audio16k: Float32Array;
+  readonly options: ParakeetDecodeOptions | undefined;
+}
+
+export interface FakeParakeetEngine {
+  readonly layer: Layer.Layer<ParakeetEngine>;
+  readonly ensureCalls: ReadonlyArray<string>;
+  readonly transcribeCalls: ReadonlyArray<FakeParakeetCall>;
+  readonly setTranscribeResponder: (
+    fn: (call: FakeParakeetCall) => ParakeetTranscription | ParakeetEngineError
+  ) => void;
+}
+
+/**
+ * A scriptable ParakeetEngine, the counterpart of makeFakeWhisperEngine: no
+ * worker, no sherpa addon, no 660 MB of weights. `ensureCalls` records the
+ * encoder path, which is what identifies WHICH bundle the lane resolved.
+ */
+export const makeFakeParakeetEngine = (): FakeParakeetEngine => {
+  const ensureCalls: string[] = [];
+  const transcribeCalls: FakeParakeetCall[] = [];
+  let transcribeResponder: (call: FakeParakeetCall) => ParakeetTranscription | ParakeetEngineError =
+    () => ({ text: '', timestamps: [] });
+
+  const api: ParakeetEngineApi = {
+    ensureModel: model =>
+      Effect.sync(() => {
+        ensureCalls.push(model.encoder);
+      }),
+    transcribe: (audio16k, options) =>
+      Effect.suspend(() => {
+        const call: FakeParakeetCall = { audio16k, options };
+        transcribeCalls.push(call);
+        const answer = transcribeResponder(call);
+        return answer instanceof ParakeetEngineError ? Effect.fail(answer) : Effect.succeed(answer);
+      }),
+    dispose: Effect.void,
+  };
+  return {
+    layer: Layer.succeed(ParakeetEngine, api),
+    ensureCalls,
+    transcribeCalls,
+    setTranscribeResponder: fn => {
+      transcribeResponder = fn;
+    },
+  };
+};
+
 /**
  * Complete WorkspaceLayerEnv additions in one merge for harnesses
  * that build a whole workspace and do not care about the engine (cloud default).
@@ -240,16 +305,24 @@ export const workspaceEnvStubs = (
   mode: AppMode = 'cloud',
   settings: Partial<DeviceSettings> = {}
 ): Layer.Layer<
-  SettingsService | SecureStore | AppModeService | ModelManager | WhisperEngine | AiProvider
+  | SettingsService
+  | SecureStore
+  | AppModeService
+  | ModelManager
+  | WhisperEngine
+  | ParakeetEngine
+  | AiProvider
 > =>
   Layer.mergeAll(
     makeFakeSettings(settings).layer,
     fakeSecureStoreLayer(),
     fakeModelManagerLayer(),
     makeFakeWhisperEngine().layer,
+    makeFakeParakeetEngine().layer,
     fakeAiProviderLayer(),
     Layer.succeed(AppModeService, { mode, chosen: true })
   );
+
 
 /**
  * The production Transcriber composition over a (fake) WorkspaceBackend: the
@@ -262,10 +335,13 @@ export const makeTranscriberStack = (
   lanes: {
     readonly local?: Layer.Layer<LocalTranscriberLane, never, MainLogger>;
     readonly byok?: Layer.Layer<ByokTranscriberLane, never, MainLogger>;
+    readonly parakeet?: Layer.Layer<ParakeetTranscriberLane, never, MainLogger>;
   } = {}
 ): Layer.Layer<Transcriber, never, MainLogger> =>
   TranscriberLive.pipe(
     Layer.provide(CloudTranscriberLive.pipe(Layer.provide(backend))),
     Layer.provide(lanes.local ?? LocalTranscriberPlaceholderLive),
-    Layer.provide(lanes.byok ?? ByokTranscriberPlaceholderLive)
+    Layer.provide(lanes.byok ?? ByokTranscriberPlaceholderLive),
+    Layer.provide(lanes.parakeet ?? ParakeetTranscriberPlaceholderLive)
   );
+

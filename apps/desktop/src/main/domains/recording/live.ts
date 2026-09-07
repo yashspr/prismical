@@ -51,6 +51,7 @@ import type { RecoveryPauseCutPoint } from '../../infra/operational-db/schema';
 import type { ProductDbError } from '../../infra/product-db/service';
 import { RecordingBridge } from './bridge';
 import { WorkspaceIdentity } from '../../runtime/workspace-identity';
+import { requiredPartIds } from '../models/bundles';
 import { ModelManager } from '../models/service';
 import {
   Capture,
@@ -1258,11 +1259,17 @@ export const RecordingServiceLive: Layer.Layer<
           }
 
           const engine = resolveRecordingEngine(appMode, (yield* settings.get).transcription);
-          if (
-            engine.engine === 'local' &&
-            Option.isNone(yield* models.installedPath(engine.modelId))
-          ) {
-            return yield* Effect.fail(new RecordingStartError({ reason: 'model-missing' }));
+          if (engine.engine === 'local') {
+            // Through requiredPartIds, never installedPath(modelId) directly: a
+            // Parakeet selection is a BUNDLE id, which owns four catalogue rows
+            // and has none of its own, so the direct question answers None with
+            // every byte on disk and refuses to record.
+            const parts = yield* Effect.forEach(requiredPartIds(engine.modelId), id =>
+              models.installedPath(id)
+            );
+            if (parts.some(Option.isNone)) {
+              return yield* Effect.fail(new RecordingStartError({ reason: 'model-missing' }));
+            }
           }
           const recordingId = createId('recording');
           const completionReady = yield* Deferred.make<boolean>();

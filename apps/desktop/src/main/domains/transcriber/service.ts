@@ -75,3 +75,16 @@ export class ByokTranscriberLane extends Context.Tag('desktop/transcriber/ByokLa
   ByokTranscriberLane,
   TranscriberLaneApi
 >() {}
+
+/**
+ * The second ON-DEVICE lane (sherpa-onnx / Parakeet). Not a fourth
+ * `TranscriptionEngine`: to the user and to the stored preference this is still
+ * `engine: 'local'` with a different model chosen, so the wire contract and
+ * every persisted setting keep their shape. TranscriberLive routes a 'local'
+ * chunk here when the frozen `modelId` names a Parakeet bundle, and to
+ * LocalTranscriberLane (whisper) otherwise.
+ */
+export class ParakeetTranscriberLane extends Context.Tag('desktop/transcriber/ParakeetLane')<
+  ParakeetTranscriberLane,
+  TranscriberLaneApi
+>() {}

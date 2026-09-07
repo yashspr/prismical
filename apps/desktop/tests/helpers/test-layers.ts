@@ -20,6 +20,7 @@ import { redactValue } from '../../src/main/infra/logging/redact';
 export const testConfig = (overrides: Partial<AppConfigService> = {}): AppConfigService => ({
   // Recovery WAVs follow the (possibly overridden) profile dir, as in the real config.
   recoveryDir: path.join(overrides.userDataDir ?? '/fake/user-data', 'recovery'),
+  audioDir: path.join(overrides.userDataDir ?? '/fake/user-data', 'audio'),
   isPackaged: false,
   isE2E: false,
   secureStoreMode: 'safeStorage',

@@ -47,6 +47,7 @@ const FIELDS = [
   'autoExpandOnRecording',
   'dockContentProtection',
   'telemetryOptOut',
+  'keepAudio',
   // Transcription engine — one record row, like dockAnchors.
   'transcription',
   // AI provider — one record row.
@@ -90,6 +91,7 @@ const decodeSettings = (raw: Record<keyof DeviceSettings, string | null>): Devic
   const autoExpandOnRecording = decodeJson(raw.autoExpandOnRecording);
   const dockContentProtection = decodeJson(raw.dockContentProtection);
   const telemetryOptOut = decodeJson(raw.telemetryOptOut);
+  const keepAudio = decodeJson(raw.keepAudio);
   const transcription = transcriptionSettingSchema.safeParse(decodeJson(raw.transcription));
   const ai = aiProviderSettingSchema.safeParse(decodeJson(raw.ai));
   return {
@@ -131,6 +133,7 @@ const decodeSettings = (raw: Record<keyof DeviceSettings, string | null>): Devic
       typeof telemetryOptOut === 'boolean'
         ? telemetryOptOut
         : DEFAULT_DEVICE_SETTINGS.telemetryOptOut,
+    keepAudio: typeof keepAudio === 'boolean' ? keepAudio : DEFAULT_DEVICE_SETTINGS.keepAudio,
     transcription: transcription.success
       ? transcription.data
       : DEFAULT_DEVICE_SETTINGS.transcription,
@@ -170,6 +173,7 @@ const sanitizePatch = (patch: Partial<DeviceSettings>): Partial<DeviceSettings> 
   if (typeof patch.dockContentProtection === 'boolean')
     clean.dockContentProtection = patch.dockContentProtection;
   if (typeof patch.telemetryOptOut === 'boolean') clean.telemetryOptOut = patch.telemetryOptOut;
+  if (typeof patch.keepAudio === 'boolean') clean.keepAudio = patch.keepAudio;
   // Transcription engine — validated whole-record, like the dock records.
   if (patch.transcription !== undefined) {
     const transcription = transcriptionSettingSchema.safeParse(patch.transcription);

@@ -21,6 +21,8 @@ const idle: ModelsStateView = {
       installed: false,
       installedAt: null,
       download: null,
+      linked: false,
+
     },
   ],
   modelsDir: '/profile/models',

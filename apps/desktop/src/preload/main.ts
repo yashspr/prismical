@@ -22,7 +22,9 @@ import {
   type ThemeSource,
   type MainWindowDesktopApi,
   type FloatStateView,
+  type ModelImportRequest,
   type ModelRequest,
+
   type ModelsStateView,
   type NavPush,
   type OpenStreamResponse,
@@ -254,7 +256,11 @@ const api: MainWindowDesktopApi = {
     cancelDownload: (request: ModelRequest) =>
       ipcRenderer.invoke(CHANNELS.modelsCancelDownload, request),
     delete: (request: ModelRequest) => ipcRenderer.invoke(CHANNELS.modelsDelete, request),
+    // The one model verb that answers: the caller is waiting to hear whether a
+    // copy was found, and the snapshot cannot say "nothing matched".
+    import: (request: ModelImportRequest) => ipcRenderer.invoke(CHANNELS.modelsImport, request),
     onStateChanged: modelsBuffer.onState,
+
   },
 
   // The floating note: open/collapse/dock-back are
@@ -284,6 +290,7 @@ const api: MainWindowDesktopApi = {
     restartToUpdate: () => ipcRenderer.invoke(CHANNELS.updaterQuitInstall),
     dismissUpdatePrompt: () => ipcRenderer.invoke(CHANNELS.updaterDismissPrompt),
     exportLogs: () => ipcRenderer.invoke(CHANNELS.capabilityExportLogs),
+    revealAudio: () => ipcRenderer.invoke(CHANNELS.capabilityRevealAudio),
     restartApp: () => ipcRenderer.invoke(CHANNELS.capabilityRestartApp),
     // The device reset; `{ mode }` makes it the mode switch.
     resetApp: (request?: ResetAppRequest) =>

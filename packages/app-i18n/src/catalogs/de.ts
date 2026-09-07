@@ -2408,8 +2408,16 @@ const de = {
         unsupported: 'Für diesen Anbieter ist keine Modellliste verfügbar.',
       },
       clearKey: 'Schlüssel löschen',
+      cliCommandHelp:
+        'Leer lassen, um eine auf diesem Gerät gefundene CLI zu verwenden. Der Prompt wird über die Standardeingabe übergeben, und der Befehl läuft direkt — nie über eine Shell.',
+      cliCommandLabel: 'Eigener Befehl',
+      cliCommandPlaceholder: 'my-agent --print',
       description:
         'Wähle, welches Sprachmodell Ask, Enhance, Cleanup und Notiz benennen auf diesem Gerät ausführt.',
+      effortDefault: 'Standard (die CLI entscheidet)',
+      effortHelp:
+        'Wird an CLIs übergeben, die eine Aufwandsstufe anbieten — derzeit Claude Code. CLIs ohne diese Option ignorieren den Wert.',
+      effortLabel: 'Denkaufwand',
       keyMissing: 'Auf diesem Gerät ist kein Schlüssel gespeichert.',
       keySet:
         'Auf diesem Gerät ist ein Schlüssel gespeichert. Füge einen neuen ein, um ihn zu ersetzen.',
@@ -2419,6 +2427,11 @@ const de = {
         anthropic: {
           description: 'Eigenen Anthropic-API-Schlüssel verwenden.',
           label: 'Anthropic',
+        },
+        cli: {
+          description:
+            'Nutzt einen Coding-Agenten, der hier bereits installiert und angemeldet ist — Claude Code, Codex, opencode oder Cursor.',
+          label: 'Lokale Agent-CLI',
         },
         ollama: {
           description: 'Eine lokale Ollama-Laufzeit. Nichts verlässt diesen Computer.',
@@ -2492,6 +2505,7 @@ const de = {
       delete: 'Löschen',
       deleteConfirm:
         'Die Modelldatei wird von diesem Gerät entfernt. Du kannst sie jederzeit erneut herunterladen.',
+      deleteConfirmLinked: 'Diese Gewichte sind eine Verknüpfung zu einer Kopie, die bereits auf diesem Gerät vorhanden war. Beim Entfernen wird nur die Verknüpfung gelöscht – die Originaldateien bleiben, wo sie sind.',
       deleteConfirmTitle: '{{name}} löschen?',
       description:
         'Lade Spracherkennungsmodelle herunter, um Aufnahmen auf diesem Gerät zu transkribieren. Die Modelle werden von Hugging Face geladen und vor der Verwendung geprüft.',
@@ -2505,7 +2519,20 @@ const de = {
         io: 'Die Modelldatei konnte nicht geschrieben werden.',
         network: 'Der Download ist fehlgeschlagen. Prüfe deine Verbindung und versuche es erneut.',
       },
+      groupParakeet: 'Parakeet',
+      groupParakeetHint: 'NVIDIA Parakeet TDT – auf der CPU um ein Vielfaches schneller als Whisper und setzt Satzzeichen direkt mit. Jedes Modell besteht aus vier Dateien, die als eines installiert werden.',
+      groupWhisper: 'Whisper',
+      groupWhisperHint: 'Eine Datei pro Modell. Genau, und je größer, desto langsamer.',
+      importAlready: 'Dieses Modell ist bereits installiert.',
+      importBrowse: 'Ordner wählen…',
+      importDone: '{{linked}} von {{total}} Dateien aus {{path}} verknüpft – kein Download nötig.',
+      importFailed: 'Eine passende Kopie wurde gefunden, konnte aber nicht verknüpft werden.',
+      importNotFound: 'Auf diesem Gerät wurde keine passende Kopie gefunden. Du kannst selbst einen Ordner angeben.',
+      importPartial: '{{linked}} von {{total}} Dateien aus {{path}} verknüpft. Den Rest herunterladen.',
+      importScan: 'Vorhandene Kopie suchen',
+      importSearching: 'Gerät wird durchsucht…',
       installed: 'Installiert',
+      linked: 'Verknüpft',
       loading: 'Modelle werden geladen…',
       recommended: 'Empfohlen',
       retry: 'Erneut versuchen',
@@ -2595,6 +2622,13 @@ const de = {
       silencePause: 'Seit einer Weile kein Ton — die Aufnahme wird pausiert, um Minuten zu sparen.',
       stillThere: 'Noch da?',
       takeNotes: 'Notizen machen',
+    },
+    recordingAudio: {
+      description: 'Was mit dem Audio eines Meetings geschieht, sobald es transkribiert wurde.',
+      keepDescription: 'Aufnahmen bleiben auf diesem Gerät, statt gelöscht zu werden, sobald das Transkript gespeichert ist. Mikrofon und Systemton zusammen schreiben etwa 11,5 MB pro Minute, und alte Dateien werden nicht automatisch entfernt.',
+      keepLabel: 'Audio nach der Transkription behalten',
+      reveal: 'Aufnahmeordner anzeigen',
+      title: 'Meeting-Audio',
     },
     routeError: {
       description: 'Versuche, diesen Bereich erneut zu öffnen.',

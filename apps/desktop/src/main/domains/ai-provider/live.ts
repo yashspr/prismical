@@ -1,12 +1,23 @@
 import { Clock, Effect, Layer, Ref } from 'effect';
 import type { LanguageModel } from 'ai';
-import type { AiModelListing, AiProviderKind, AiProviderSetting } from '@prismical/desktop-contracts';
+import type {
+  AiModelListing,
+  AiProviderKind,
+  AiProviderSetting,
+} from '@prismical/desktop-contracts';
 import { AppConfig } from '../../infra/config/service';
 import { MainLogger } from '../../infra/logging/service';
 import { SecureStore } from '../../infra/secure-store/service';
 import { SettingsService } from '../settings/service';
 import { fetchModelListing, PROVIDER_DEFAULTS, type FetchLike } from './catalogue';
-import { AI_PROVIDER_KINDS, localInstanceId, PROVIDER_LABELS, providerOfInstanceId } from './instances';
+import { makeBinaryResolver, type BinaryResolver } from './cli/binary-path';
+import { listCliModels } from './cli/catalogue';
+import {
+  AI_PROVIDER_KINDS,
+  localInstanceId,
+  PROVIDER_LABELS,
+  providerOfInstanceId,
+} from './instances';
 import { createE2EFakeModel, E2E_FAKE_MODEL_ID } from './e2e-fake-model';
 import { buildLanguageModel } from './models';
 import { aiProviderSecretKey } from './secrets';
@@ -29,6 +40,8 @@ export interface AiProviderLiveOptions {
   readonly fakeModel?: () => Promise<LanguageModel>;
   /** How long a learned tool-support downgrade is honoured before the ladder re-probes. */
   readonly toolSupportTtlMs?: number;
+  /** Injected for tests; defaults to a resolver over the login-shell PATH. */
+  readonly binaryResolver?: BinaryResolver;
 }
 
 /** A successful listing is reused for this long; a failed one is retried after a shorter hold. */
@@ -71,6 +84,11 @@ export const makeAiProviderLive = (
       const fakeModel = options.fakeModel ?? (config.e2eFakeAi ? createE2EFakeModel : undefined);
       if (fakeModel !== undefined) yield* log.warn('AiProvider is serving the scripted fake model');
 
+      // Boot-scoped like the catalogue cache: the login-shell PATH is asked for
+      // once and every lookup memoized, so a settings card that lists models
+      // repeatedly does not re-spawn a shell each time.
+      const binaryResolver = options.binaryResolver ?? makeBinaryResolver({});
+
       const catalogues = yield* Ref.make(new Map<AiProviderKind, CachedListing>());
       const toolSupport = yield* Ref.make(new Map<string, MemoEntry>());
 
@@ -81,7 +99,9 @@ export const makeAiProviderLive = (
         secrets.getSecret(aiProviderSecretKey(provider)).pipe(
           Effect.map(value => (value === null || value === '' ? null : value)),
           Effect.catchAll(error =>
-            log.warn('provider key unreadable', { provider, error: error._tag }).pipe(Effect.as(null))
+            log
+              .warn('provider key unreadable', { provider, error: error._tag })
+              .pipe(Effect.as(null))
           )
         );
 
@@ -111,9 +131,15 @@ export const makeAiProviderLive = (
           const setting = (yield* settings.get).ai;
           const { baseUrl } = settingFor(provider, setting);
           const apiKey = yield* readKey(provider);
-          const listing = yield* Effect.promise(() =>
-            fetchModelListing({ provider, baseUrl, apiKey, fetchFn })
-          );
+          // The CLI provider's catalogue is a PATH probe, not a fetch.
+          const listing =
+            provider === 'cli'
+              ? yield* Effect.promise(() =>
+                  listCliModels({ resolver: binaryResolver, cliCommand: setting.cliCommand })
+                )
+              : yield* Effect.promise(() =>
+                  fetchModelListing({ provider, baseUrl, apiKey, fetchFn })
+                );
           // A not-configured answer costs no network and is stale the moment a
           // key or base URL lands — never cache it (the settings card re-lists
           // right after a save).
@@ -135,7 +161,8 @@ export const makeAiProviderLive = (
           const defaults = PROVIDER_DEFAULTS[provider];
           if (defaults.needsKey) return (yield* readKey(provider)) !== null;
           if (defaults.needsBaseUrl) return settingFor(provider, setting).baseUrl !== null;
-          // Ollama needs neither — it is "configured" when the runtime answers.
+          // Ollama and cli need neither: Ollama is "configured" when the
+          // runtime answers, cli when a supported CLI is on the search path.
           return (yield* listModels(provider)).error === null;
         });
 
@@ -157,7 +184,8 @@ export const makeAiProviderLive = (
         const rows: AiInstanceView[] = [];
         for (const provider of AI_PROVIDER_KINDS) {
           const active = provider === setting.provider;
-          if (!active && (fakeModel !== undefined || !(yield* configured(provider, setting)))) continue;
+          if (!active && (fakeModel !== undefined || !(yield* configured(provider, setting))))
+            continue;
           const listing = yield* listModels(provider);
           const chosen = settingFor(provider, setting).model;
           const models = [
@@ -177,7 +205,9 @@ export const makeAiProviderLive = (
       const defaultSelection: AiProviderApi['defaultSelection'] = Effect.gen(function* () {
         const setting = (yield* settings.get).ai;
         const modelId =
-          fakeModel !== undefined ? E2E_FAKE_MODEL_ID : yield* effectiveModel(setting.provider, setting);
+          fakeModel !== undefined
+            ? E2E_FAKE_MODEL_ID
+            : yield* effectiveModel(setting.provider, setting);
         return modelId === null ? null : { instanceId: localInstanceId(setting.provider), modelId };
       });
 
@@ -191,6 +221,10 @@ export const makeAiProviderLive = (
               provider,
               model: selection.modelId,
               baseUrl: current.provider === provider ? current.baseUrl : null,
+              // The custom command belongs to the cli provider; picking a
+              // different one must not leave it armed behind the new choice.
+              cliCommand: current.provider === provider ? current.cliCommand : null,
+              cliEffort: current.provider === provider ? current.cliEffort : null,
             },
           });
           return true;
@@ -240,19 +274,37 @@ export const makeAiProviderLive = (
             };
             return fake;
           }
-          const modelId =
-            selection.modelId ?? (yield* effectiveModel(provider, setting)) ?? null;
+          const modelId = selection.modelId ?? (yield* effectiveModel(provider, setting)) ?? null;
           if (modelId === null) {
             return yield* Effect.fail(new AiProviderError({ reason: 'model-required', provider }));
           }
           const defaults = PROVIDER_DEFAULTS[provider];
           const apiKey = yield* readKey(provider);
           const { baseUrl } = settingFor(provider, setting);
-          if ((defaults.needsKey && apiKey === null) || (defaults.needsBaseUrl && baseUrl === null)) {
+          if (
+            (defaults.needsKey && apiKey === null) ||
+            (defaults.needsBaseUrl && baseUrl === null)
+          ) {
             return yield* Effect.fail(new AiProviderError({ reason: 'not-configured', provider }));
           }
-          const model = buildLanguageModel({ provider, modelId, apiKey, baseUrl, fetchFn });
-          const support = yield* recall(provider, baseUrl, modelId);
+          const model = buildLanguageModel({
+            provider,
+            modelId,
+            apiKey,
+            baseUrl,
+            fetchFn,
+            binaryResolver,
+            cliCommand: setting.cliCommand,
+            cliEffort: setting.cliEffort,
+            log: (message, data) => {
+              Effect.runFork(log.info(message, data));
+            },
+          });
+          // A CLI answers in prose over stdout: there is no tool-call channel
+          // to probe, so the ladder must not spend a run discovering that.
+          // Pinning 'none' sends the skill runner straight to its JSON-in-text
+          // rung, which is the contract a CLI can actually keep.
+          const support = provider === 'cli' ? 'none' : yield* recall(provider, baseUrl, modelId);
           const resolved: ResolvedAiModel = {
             provider,
             modelId,

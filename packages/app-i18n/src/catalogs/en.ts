@@ -2369,8 +2369,16 @@ const en = {
         unsupported: 'Model listing is not available for this provider.',
       },
       clearKey: 'Clear key',
+      cliCommandHelp:
+        'Leave empty to use a CLI found on this machine. The prompt is sent on standard input, and the command runs directly — never through a shell.',
+      cliCommandLabel: 'Custom command',
+      cliCommandPlaceholder: 'my-agent --print',
       description:
         'Choose which language model runs Ask, Enhance, Cleanup and Name note on this device.',
+      effortDefault: 'Default (the CLI decides)',
+      effortHelp:
+        'Passed to CLIs that publish an effort control — Claude Code today. A CLI without one ignores this.',
+      effortLabel: 'Reasoning effort',
       keyMissing: 'No key is saved on this device.',
       keySet: 'A key is saved on this device. Paste a new one to replace it.',
       modelLabel: 'Model',
@@ -2379,6 +2387,11 @@ const en = {
         anthropic: {
           description: 'Use your own Anthropic API key.',
           label: 'Anthropic',
+        },
+        cli: {
+          description:
+            'Use a coding agent already installed and signed in here — Claude Code, Codex, opencode or Cursor.',
+          label: 'Local agent CLI',
         },
         ollama: {
           description: 'A local Ollama runtime. Nothing leaves this computer.',
@@ -2449,6 +2462,7 @@ const en = {
       delete: 'Delete',
       deleteConfirm:
         'The model file is removed from this device. You can download it again at any time.',
+      deleteConfirmLinked: 'These weights are a link to a copy that already existed on this device. Removing the model removes the link only — the original files stay where they are.',
       deleteConfirmTitle: 'Delete {{name}}?',
       description:
         'Download speech-recognition models to transcribe recordings on this device. Models are fetched from Hugging Face and verified before use.',
@@ -2462,7 +2476,20 @@ const en = {
         io: 'The model file could not be written.',
         network: 'The download failed. Check your connection and try again.',
       },
+      groupParakeet: 'Parakeet',
+      groupParakeetHint: 'NVIDIA Parakeet TDT — several times faster than Whisper on CPU, and it punctuates as it goes. Each model is four files, installed as one.',
+      groupWhisper: 'Whisper',
+      groupWhisperHint: 'One file per model. Accurate, and slower the larger it gets.',
+      importAlready: 'This model is already installed.',
+      importBrowse: 'Choose folder…',
+      importDone: 'Linked {{linked}} of {{total}} files from {{path}} — nothing to download.',
+      importFailed: 'A matching copy was found, but it could not be linked.',
+      importNotFound: 'No matching copy found on this device. You can point at a folder yourself.',
+      importPartial: 'Linked {{linked}} of {{total}} files from {{path}}. Download the rest.',
+      importScan: 'Find existing copy',
+      importSearching: 'Searching this device…',
       installed: 'Installed',
+      linked: 'Linked',
       loading: 'Loading models…',
       recommended: 'Recommended',
       retry: 'Retry',
@@ -2552,6 +2579,13 @@ const en = {
       silencePause: 'No sound for a while — pausing to save your minutes.',
       stillThere: 'Still there?',
       takeNotes: 'Take Notes',
+    },
+    recordingAudio: {
+      description: 'What happens to a meeting’s audio once it has been transcribed.',
+      keepDescription: 'Recordings stay on this device instead of being deleted once the transcript is saved. Capturing microphone and system audio together writes about 11.5 MB per minute, and nothing clears old files for you.',
+      keepLabel: 'Keep audio after transcription',
+      reveal: 'Show recordings folder',
+      title: 'Meeting audio',
     },
     routeError: {
       description: 'Try opening this section again.',

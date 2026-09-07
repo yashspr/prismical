@@ -23,6 +23,10 @@ export const PROVIDER_DEFAULTS: Record<AiProviderKind, ProviderDefaults> = {
   anthropic: { baseUrl: null, model: 'claude-opus-5', needsKey: true, needsBaseUrl: false },
   'openai-compatible': { baseUrl: null, model: null, needsKey: false, needsBaseUrl: true },
   ollama: { baseUrl: 'http://127.0.0.1:11434', model: null, needsKey: false, needsBaseUrl: false },
+  // The CLI provider has no endpoint and no key: it is "configured" when a
+  // supported CLI is installed, which only a PATH lookup can answer. Its
+  // catalogue is built in cli/catalogue.ts, never fetched.
+  cli: { baseUrl: null, model: null, needsKey: false, needsBaseUrl: false },
 };
 
 export const ANTHROPIC_API_URL = 'https://api.anthropic.com';
@@ -79,6 +83,11 @@ export async function fetchModelListing(args: {
   const defaults = PROVIDER_DEFAULTS[provider];
   if (defaults.needsKey && !apiKey) return { models: [], error: 'not-configured' };
   if (defaults.needsBaseUrl && !args.baseUrl) return { models: [], error: 'not-configured' };
+
+  // The CLI provider is local: it has no listing endpoint. AiProviderLive
+  // intercepts it before this point; reaching here means a caller bypassed
+  // that, and an empty 'unsupported' is a better answer than a fetch of ''.
+  if (provider === 'cli') return { models: [], error: 'unsupported' };
 
   let url: string;
   let headers: Record<string, string>;

@@ -40,12 +40,40 @@ export interface ModelCatalogueEntry {
 
 const HF_WHISPER_CPP = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
 const HF_WHISPER_VAD = 'https://huggingface.co/ggml-org/whisper-vad/resolve/main';
+/**
+ * The sherpa-onnx export of NVIDIA's Parakeet TDT. Same link-only rule as the
+ * ggml entries: upstream's `resolve/main` files with a pinned SHA-1, never
+ * redistributed. These bytes were verified identical to the ones in k2-fsa's
+ * own GitHub release tarball before the pins below were written.
+ */
+const HF_PARAKEET_V2 =
+  'https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main';
+/**
+ * v3 — same export, 25 European languages instead of English only, and the one
+ * to prefer for meetings that are not reliably in English. Its pins were
+ * checked against Hugging Face's own object ids: the three ONNX graphs are LFS,
+ * so their published sha256 was compared with the downloaded bytes, and
+ * tokens.txt is a plain git blob, so its blob oid was recomputed locally.
+ */
+const HF_PARAKEET_V3 =
+  'https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main';
 
 /** The desktop's suggested first download (English-only base). */
 export const RECOMMENDED_MODEL_ID = 'whisper-base-en';
 
 /** The one VAD entry — what the local lane resolves to enable whisper.cpp's VAD. */
 export const VAD_MODEL_ID = 'silero-vad-v5';
+
+/**
+ * The Parakeet bundle id. This is what `transcription.modelId` stores and what
+ * the settings screen shows as ONE model — its four files are catalogue
+ * entries of their own (see MODEL_BUNDLES) because each downloads, resumes and
+ * verifies independently.
+ */
+export const PARAKEET_V2_MODEL_ID = 'parakeet-tdt-0.6b-v2';
+
+/** The multilingual Parakeet bundle id (25 languages) — the recommended one. */
+export const PARAKEET_V3_MODEL_ID = 'parakeet-tdt-0.6b-v3';
 
 export const MODEL_CATALOGUE: ReadonlyArray<ModelCatalogueEntry> = [
   {
@@ -120,6 +148,87 @@ export const MODEL_CATALOGUE: ReadonlyArray<ModelCatalogueEntry> = [
     sha1: 'a372f48dcf0bd9e4330eef2802bc46e061c19634',
     sizeBytes: 885_098,
     kind: 'vad',
+  },
+  // ── Parakeet TDT 0.6b v2 (int8), one entry per file ─────────────────────
+  // sherpa-onnx takes the four paths individually, so they install flat beside
+  // the ggml weights like every other entry — no archive, no directory. The
+  // local filenames are namespaced because upstream's are generic
+  // (`encoder.int8.onnx` would collide with any future ONNX model).
+  {
+    id: 'parakeet-tdt-0.6b-v2-encoder',
+    name: 'Parakeet TDT 0.6b v2 — encoder',
+    filename: 'parakeet-tdt-0.6b-v2-encoder.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V2}/encoder.int8.onnx`,
+    sha1: '3c8e9e1f59182fe85aab95d354567bef2722e549',
+    sizeBytes: 652_184_296,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v2-decoder',
+    name: 'Parakeet TDT 0.6b v2 — decoder',
+    filename: 'parakeet-tdt-0.6b-v2-decoder.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V2}/decoder.int8.onnx`,
+    sha1: '7d0f5c484bd76a6ad071084912604efe49bdedb1',
+    sizeBytes: 7_257_753,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v2-joiner',
+    name: 'Parakeet TDT 0.6b v2 — joiner',
+    filename: 'parakeet-tdt-0.6b-v2-joiner.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V2}/joiner.int8.onnx`,
+    sha1: 'e932afdd30b7adddece855983d208bdb262f09bb',
+    sizeBytes: 1_739_080,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v2-tokens',
+    name: 'Parakeet TDT 0.6b v2 — tokens',
+    filename: 'parakeet-tdt-0.6b-v2-tokens.txt',
+    downloadUrl: `${HF_PARAKEET_V2}/tokens.txt`,
+    sha1: '9dc2ee79b820d18d5683aca253edd1987a827d24',
+    sizeBytes: 9_384,
+    kind: 'parakeet',
+  },
+  // ── Parakeet TDT 0.6b v3 (int8) ─────────────────────────────────────────
+  // Same four-file shape as v2; a 8193-entry multilingual vocabulary in place
+  // of v2's 1025-entry English one, which is where most of the extra 84 KB of
+  // tokens and 9 MB of decoder/joiner goes.
+  {
+    id: 'parakeet-tdt-0.6b-v3-encoder',
+    name: 'Parakeet TDT 0.6b v3 — encoder',
+    filename: 'parakeet-tdt-0.6b-v3-encoder.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V3}/encoder.int8.onnx`,
+    sha1: '0a3010096c5111233f51e3e096f229e637c0db73',
+    sizeBytes: 652_184_281,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v3-decoder',
+    name: 'Parakeet TDT 0.6b v3 — decoder',
+    filename: 'parakeet-tdt-0.6b-v3-decoder.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V3}/decoder.int8.onnx`,
+    sha1: '311de941f84e4410718dc34c26779db287b77670',
+    sizeBytes: 11_845_275,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v3-joiner',
+    name: 'Parakeet TDT 0.6b v3 — joiner',
+    filename: 'parakeet-tdt-0.6b-v3-joiner.int8.onnx',
+    downloadUrl: `${HF_PARAKEET_V3}/joiner.int8.onnx`,
+    sha1: 'e90410ef09927c1d3f327b885e055935d24ebb57',
+    sizeBytes: 6_355_277,
+    kind: 'parakeet',
+  },
+  {
+    id: 'parakeet-tdt-0.6b-v3-tokens',
+    name: 'Parakeet TDT 0.6b v3 — tokens',
+    filename: 'parakeet-tdt-0.6b-v3-tokens.txt',
+    downloadUrl: `${HF_PARAKEET_V3}/tokens.txt`,
+    sha1: 'cffaddf7361fbb9cdbe57ad1f53bfeea94489f02',
+    sizeBytes: 93_939,
+    kind: 'parakeet',
   },
 ];
 

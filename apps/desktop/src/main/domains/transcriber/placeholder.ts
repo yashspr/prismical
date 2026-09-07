@@ -13,7 +13,12 @@ import { Effect, HashSet, Layer, Ref } from 'effect';
 import type { TranscriptionEngine } from '@prismical/desktop-contracts';
 import { MainLogger } from '../../infra/logging/service';
 import type { RecordingLaneResult, RecordingSegment } from '../transport/service';
-import { ByokTranscriberLane, LocalTranscriberLane, type TranscriberLaneApi } from './service';
+import {
+  ByokTranscriberLane,
+  LocalTranscriberLane,
+  ParakeetTranscriberLane,
+  type TranscriberLaneApi,
+} from './service';
 
 const EMPTY_OK: RecordingLaneResult<readonly RecordingSegment[]> = { ok: true, value: [] };
 
@@ -48,3 +53,14 @@ export const LocalTranscriberPlaceholderLive: Layer.Layer<LocalTranscriberLane, 
 
 export const ByokTranscriberPlaceholderLive: Layer.Layer<ByokTranscriberLane, never, MainLogger> =
   Layer.effect(ByokTranscriberLane, makePlaceholderLane('byok'));
+
+/**
+ * Parakeet's placeholder. It reports `engine: 'local'` because that IS the
+ * engine the user chose — Parakeet is a model choice inside the local engine,
+ * not an engine of its own (see ParakeetTranscriberLane).
+ */
+export const ParakeetTranscriberPlaceholderLive: Layer.Layer<
+  ParakeetTranscriberLane,
+  never,
+  MainLogger
+> = Layer.effect(ParakeetTranscriberLane, makePlaceholderLane('local'));

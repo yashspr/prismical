@@ -416,6 +416,10 @@ const createDesktopCapabilityPort = (appMode: 'local' | 'cloud'): DesktopCapabil
     window.desktop.capabilities
       .exportLogs()
       .catch(error => log('capabilities.exportLogs invoke failed', error)),
+  revealAudio: () =>
+    window.desktop.capabilities
+      .revealAudio()
+      .catch(error => log('capabilities.revealAudio invoke failed', error)),
   // The floating note: fire-and-forget — the float window
   // opening is the feedback; preload's float.open already swallows the invoke.
   openFloatingNote: noteId => {
@@ -466,6 +470,15 @@ const createDesktopCapabilityPort = (appMode: 'local' | 'cloud'): DesktopCapabil
       window.desktop.models
         .delete({ modelId })
         .catch(error => log('models.delete invoke failed', error)),
+    // NOT fire-and-forget: the screen renders this answer. An invoke that
+    // rejects (a dead main, a rejected sender) becomes `io` so the caller
+    // always has an outcome to show rather than an unhandled rejection.
+    import: (modelId, browse) =>
+      window.desktop.models.import({ modelId, browse }).catch(error => {
+        log('models.import invoke failed', error);
+        return { outcome: 'io' as const, imported: 0, total: 0, sourceDir: null };
+      }),
+
     subscribe: listener => {
       let active = true;
       let pushed = false;

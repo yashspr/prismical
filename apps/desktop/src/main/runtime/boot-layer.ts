@@ -19,6 +19,7 @@
  *   ├─ UpdaterService       ← AppConfig, MainLogger
  *   ├─ ModelManager         ← AppConfig, OperationalDb, MainLogger (local whisper weights)
  *   ├─ WhisperEngine        ← AppConfig, MainLogger (the whisper.cpp worker host)
+ *   ├─ ParakeetEngine       ← AppConfig, MainLogger (the sherpa-onnx worker host)
  *   ├─ StreamBroker         ← MainLogger
  *   ├─ CollabBridge         (leaf: boot-scoped note-body-store accessor)
  *   ├─ CollabBroker         ← MainLogger, CollabBridge (note-body log relay)
@@ -85,7 +86,9 @@ import { SecureStoreLive } from '../infra/secure-store/live';
 import type { SecureStore } from '../infra/secure-store/service';
 import { SystemPermissionsLive } from '../infra/system-permissions/live';
 import type { SystemPermissions } from '../infra/system-permissions/service';
+import { ParakeetEngineLive } from '../infra/parakeet/engine';
 import { WhisperEngineLive } from '../infra/whisper/engine';
+import type { ParakeetEngine } from '../infra/parakeet/service';
 import type { WhisperEngine } from '../infra/whisper/service';
 import type { BootError } from './boot-error';
 import { SessionLifecycleProbeLive, type SessionLifecycleProbe } from './workspace-lifecycle';
@@ -103,6 +106,7 @@ export type BootServices =
   | UpdaterService
   | ModelManager
   | WhisperEngine
+  | ParakeetEngine
   | StreamBroker
   | ShutdownCoordinator
   | SettingsService
@@ -231,6 +235,13 @@ export const makeBootLayer = (
     Layer.provide(appConfigLayer),
     Layer.provide(logging)
   );
+  // The sherpa-onnx worker host, boot-scoped for the same reasons: a built
+  // recognizer (a 652 MB encoder graph) must survive a workspace rebuild, and
+  // nothing is forked at build — the sidecar starts on the first Parakeet chunk.
+  const parakeetEngine = ParakeetEngineLive.pipe(
+    Layer.provide(appConfigLayer),
+    Layer.provide(logging)
+  );
   // ONE WorkspaceTransport reference (the boot-scoped workspace-current backend
   // accessor): shared here with the StreamBroker Ask lane and merged as a
   // top-level service for the unary IPC handler, so both read the SAME registered
@@ -264,6 +275,7 @@ export const makeBootLayer = (
     updater,
     models,
     whisperEngine,
+    parakeetEngine,
     aiProvider,
     streamBroker,
     shutdown,

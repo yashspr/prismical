@@ -6,10 +6,12 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { Clock, Data, Effect, Layer, Queue, Stream, SubscriptionRef } from 'effect';
+import { AppConfig } from '../../infra/config/service';
 import { MainLogger } from '../../infra/logging/service';
 import { OperationalDb, type RecoveryOutboxRow } from '../../infra/operational-db/service';
 import type { RecoveryPauseCutPoint } from '../../infra/operational-db/schema';
 import type { ProductDbError } from '../../infra/product-db/service';
+import { requiredPartIds } from '../models/bundles';
 import { detectedSpeakerCountFor } from '../transcriber/segment';
 import { Transcriber } from '../transcriber/service';
 import {
@@ -33,6 +35,7 @@ import { readStagingLanes } from './staging-lanes';
 import { RecordingService, type RecordingServiceApi, type RecordingState } from './service';
 import { WorkspaceIdentity, sameWorkspace } from '../../runtime/workspace-identity';
 import { RecordingStore } from './store';
+import { SettingsService } from '../settings/service';
 
 /** Optional staging may be abandoned after this many attempts. Required work keeps retrying. */
 export const MAX_DRAIN_ATTEMPTS = 5;
@@ -164,6 +167,46 @@ class RecoveryFileError extends Data.TaggedError('RecoveryFileError')<{
 const fileOperation = <A>(run: () => A): Effect.Effect<A, RecoveryFileError> =>
   Effect.try({ try: run, catch: cause => new RecoveryFileError({ cause }) });
 
+/**
+ * What happens to a recording's WAV pair once its transcript is durable:
+ * deleted, or moved to `audioDir/<recordingId>/` when the user asked to keep it.
+ *
+ * A rename, not a copy — both trees live under the same profile, so retention
+ * costs one directory entry however long the meeting was.
+ *
+ * Failure PARKS, exactly as a failed delete always has: the row keeps its
+ * 'cleanup' phase, so a retry re-runs this step alone and never repeats the
+ * upload or finalize, and the attempt cap ends at 'failed' with the WAVs still
+ * in recoveryDir. Swallowing the failure and deleting instead would throw away
+ * the audio the user explicitly asked to keep, on the one path where it is
+ * still recoverable.
+ */
+const retireWav = (
+  wavPath: string,
+  recordingId: string,
+  keep: boolean,
+  audioDir: string
+): Effect.Effect<boolean, RecoveryFileError> =>
+  keep
+    ? fileOperation(() => {
+        // Idempotent, because 'cleanup' is a RESUMABLE phase: a row whose WAVs
+        // were retired but whose outbox delete then failed re-enters here with
+        // nothing left to move. `rmSync({ force: true })` below shrugs at a
+        // missing path; `renameSync` would throw ENOENT and re-park forever.
+        if (!fs.existsSync(wavPath)) return true;
+        const destination = path.join(audioDir, recordingId);
+        fs.mkdirSync(audioDir, { recursive: true });
+        // A previous recording that reused this id would otherwise make
+        // renameSync fail on a non-empty directory.
+        fs.rmSync(destination, { recursive: true, force: true });
+        fs.renameSync(wavPath, destination);
+        return true;
+      })
+    : fileOperation(() => {
+        fs.rmSync(wavPath, { recursive: true, force: true });
+        return false;
+      });
+
 /** A pass is serial and only touches jobs belonging to the mounted workspace. */
 export const drainRecoveries = (
   activeRecordingId: Effect.Effect<string | null>,
@@ -171,10 +214,19 @@ export const drainRecoveries = (
 ): Effect.Effect<
   DrainSummary,
   never,
-  OperationalDb | WorkspaceBackend | RecordingStore | MainLogger | Transcriber | WorkspaceIdentity
+  | OperationalDb
+  | WorkspaceBackend
+  | RecordingStore
+  | MainLogger
+  | Transcriber
+  | WorkspaceIdentity
+  | AppConfig
+  | SettingsService
 > =>
   Effect.gen(function* () {
     const db = yield* OperationalDb;
+    const config = yield* AppConfig;
+    const settings = yield* SettingsService;
     const backend = yield* WorkspaceBackend;
     const store = yield* RecordingStore;
     const transcriber = yield* Transcriber;
@@ -290,7 +342,12 @@ export const drainRecoveries = (
         }
         if (row.phase === 'cleanup') {
           yield* resolveCompletion(row.recordingId, true);
-          yield* fileOperation(() => fs.rmSync(row.wavPath, { recursive: true, force: true }));
+          yield* retireWav(
+            row.wavPath,
+            row.recordingId,
+            (yield* settings.get).keepAudio,
+            config.audioDir
+          );
           yield* db.deleteRecoveryOutbox(row.recordingId);
           return 'resolved' as const;
         }
@@ -365,9 +422,15 @@ export const drainRecoveries = (
           const remaining = chunks.filter(chunk => chunk.index > (row.lastChunkIndex ?? -1));
           if (engine.engine === 'local' && remaining.length > 0) {
             const models = yield* db.listLocalModels();
-            const installed = models.find(model => model.modelId === engine.modelId);
-            if (installed === undefined || !fs.existsSync(installed.path))
-              return yield* park(row, 'model-missing');
+            // Expanded through requiredPartIds: a Parakeet selection names a
+            // bundle, and no `local_model` row ever carries a bundle id — its
+            // four parts each carry their own. Matching the bundle id directly
+            // would park every crashed Parakeet recording forever.
+            const missing = requiredPartIds(engine.modelId).some(partId => {
+              const installed = models.find(model => model.modelId === partId);
+              return installed === undefined || !fs.existsSync(installed.path);
+            });
+            if (missing) return yield* park(row, 'model-missing');
           }
           for (const chunk of remaining) {
             if ((yield* activeRecordingId) !== null) return 'deferred' as const;
@@ -473,11 +536,17 @@ export const drainRecoveries = (
           }
         }
         yield* transition('cleanup');
-        yield* fileOperation(() => fs.rmSync(row.wavPath, { recursive: true, force: true }));
+        const keptAudio = yield* retireWav(
+          row.wavPath,
+          row.recordingId,
+          (yield* settings.get).keepAudio,
+          config.audioDir
+        );
         yield* db.deleteRecoveryOutbox(row.recordingId);
-        yield* log.info('recovery resolved — WAV + outbox row deleted', {
-          recordingId: row.recordingId,
-        });
+        yield* log.info(
+          keptAudio ? 'recovery resolved — WAV kept, outbox row deleted' : 'recovery resolved — WAV + outbox row deleted',
+          { recordingId: row.recordingId }
+        );
         return 'resolved' as const;
       });
       return process.pipe(

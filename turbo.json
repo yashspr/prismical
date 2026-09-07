@@ -24,6 +24,9 @@
     "PORTLESS_URL",
     "GIT_SHA",
     "LOCALAPPDATA",
+    "APPDATA",
+    "PATH",
+    "SHELL",
     "NODE_EXTRA_CA_CERTS",
     "npm_lifecycle_event",
     "npm_command",
@@ -48,7 +51,8 @@
     "PRISMICAL_E2E_FAKE_SECURE_STORE",
     "PRISMICAL_E2E_PACKAGE",
     "PRISMICAL_E2E_TARGET",
-    "PRISMICAL_E2E_USER_DATA_DIR"
+    "PRISMICAL_E2E_USER_DATA_DIR",
+    "PRISMICAL_PARAKEET_MODEL_DIR"
   ],
   "tasks": {
     "clean": {

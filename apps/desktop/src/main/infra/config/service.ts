@@ -70,6 +70,13 @@ export interface AppConfigService {
    * destructive reset both resolve it from here.
    */
   readonly recoveryDir: string;
+  /**
+   * Directory holding KEPT meeting audio (`<audioDir>/<recordingId>/`), when
+   * DeviceSettings.keepAudio is on. Sibling of recoveryDir and under the same
+   * profile ON PURPOSE: retention is a rename inside one filesystem, never a
+   * copy of a multi-hundred-MB WAV pair.
+   */
+  readonly audioDir: string;
   /** Vite dev-server URL when running under `forge start`, else null. */
   readonly rendererDevServerUrl: string | null;
   readonly endpoints: EndpointDescriptor;

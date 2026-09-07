@@ -47,6 +47,8 @@ import { ByokTranscriberLive } from '../domains/transcriber/byok';
 import { CloudTranscriberLive } from '../domains/transcriber/cloud';
 import { TranscriberLive } from '../domains/transcriber/live';
 import { LocalWhisperLive } from '../domains/transcriber/local';
+import { ParakeetLive } from '../domains/transcriber/parakeet';
+import type { ParakeetEngine } from '../infra/parakeet/service';
 import { CloudBackendLive } from '../domains/transport/live';
 import { WorkspaceBackend, WorkspaceTransport } from '../domains/transport/service';
 import { AppConfig } from '../infra/config/service';
@@ -114,6 +116,7 @@ export type WorkspaceLayerEnv =
   | AppModeService
   | ModelManager
   | WhisperEngine
+  | ParakeetEngine
   | AiProvider;
 
 /**
@@ -259,6 +262,7 @@ const sharedWorkspaceServices = (): Layer.Layer<
   | SecureStore
   | ModelManager
   | WhisperEngine
+  | ParakeetEngine
   | WorkspaceIdentity
 > => {
   const micActivity = MicActivityLive;
@@ -266,6 +270,7 @@ const sharedWorkspaceServices = (): Layer.Layer<
   const transcriber = TranscriberLive.pipe(
     Layer.provide(CloudTranscriberLive),
     Layer.provide(LocalWhisperLive),
+    Layer.provide(ParakeetLive),
     Layer.provide(ByokTranscriberLive)
   );
   const recording = RecordingServiceLive.pipe(

@@ -2237,7 +2237,15 @@ const zhTW = {
         unsupported: '此供應商不提供模型列表。',
       },
       clearKey: '清除金鑰',
+      cliCommandHelp:
+        '留空即使用在這台電腦上找到的 CLI。提示會透過標準輸入傳送，指令會直接執行，不會經過 shell。',
+      cliCommandLabel: '自訂指令',
+      cliCommandPlaceholder: 'my-agent --print',
       description: '選擇在此裝置上執行 Ask、Enhance、Cleanup 與命名筆記的語言模型。',
+      effortDefault: '預設（由 CLI 決定）',
+      effortHelp:
+        '會傳給提供強度選項的 CLI（目前是 Claude Code）。不支援的 CLI 會忽略此設定。',
+      effortLabel: '推理強度',
       keyMissing: '此裝置尚未儲存金鑰。',
       keySet: '此裝置已儲存金鑰。貼上新的金鑰即可取代。',
       modelLabel: '模型',
@@ -2246,6 +2254,11 @@ const zhTW = {
         anthropic: {
           description: '使用你自己的 Anthropic API 金鑰。',
           label: 'Anthropic',
+        },
+        cli: {
+          description:
+            '使用這台電腦上已安裝並登入的程式設計代理程式：Claude Code、Codex、opencode 或 Cursor。',
+          label: '本機代理程式 CLI',
         },
         ollama: {
           description: '本機的 Ollama 執行環境。資料不會離開這台電腦。',
@@ -2315,6 +2328,7 @@ const zhTW = {
       cancelling: '正在取消…',
       delete: '刪除',
       deleteConfirm: '模型檔案將從此裝置移除。你隨時可以再次下載。',
+      deleteConfirmLinked: '這組權重是連結到此裝置上既有的副本。移除模型只會刪除連結，原始檔案會留在原處。',
       deleteConfirmTitle: '要刪除 {{name}} 嗎？',
       description:
         '下載語音辨識模型，在此裝置上轉錄錄音。模型從 Hugging Face 取得，並在使用前進行驗證。',
@@ -2327,7 +2341,20 @@ const zhTW = {
         io: '無法寫入模型檔案。',
         network: '下載失敗。請檢查網路連線後再試一次。',
       },
+      groupParakeet: 'Parakeet',
+      groupParakeetHint: 'NVIDIA Parakeet TDT，在 CPU 上比 Whisper 快數倍，並會即時加上標點。每個模型由四個檔案組成，但會當成一個安裝。',
+      groupWhisper: 'Whisper',
+      groupWhisperHint: '每個模型一個檔案。準確度高，但檔案越大越慢。',
+      importAlready: '此模型已安裝。',
+      importBrowse: '選擇資料夾…',
+      importDone: '已從 {{path}} 連結 {{total}} 個檔案中的 {{linked}} 個，不需下載。',
+      importFailed: '找到了相符的副本，但無法建立連結。',
+      importNotFound: '在此裝置上找不到相符的副本。你可以自行指定資料夾。',
+      importPartial: '已從 {{path}} 連結 {{total}} 個檔案中的 {{linked}} 個，其餘請下載。',
+      importScan: '尋找既有副本',
+      importSearching: '正在搜尋此裝置…',
       installed: '已安裝',
+      linked: '已連結',
       loading: '正在載入模型…',
       recommended: '推薦',
       retry: '重試',
@@ -2415,6 +2442,13 @@ const zhTW = {
       silencePause: '一段時間沒有聲音 — 即將暫停以節省使用分鐘數。',
       stillThere: '還在嗎？',
       takeNotes: '做筆記',
+    },
+    recordingAudio: {
+      description: '會議錄音完成轉寫後的處理方式。',
+      keepDescription: '錄音會保留在這台裝置，而不是在逐字稿儲存後刪除。同時擷取麥克風與系統聲音每分鐘約寫入 11.5 MB，且不會自動清除舊檔案。',
+      keepLabel: '轉寫後保留錄音',
+      reveal: '顯示錄音資料夾',
+      title: '會議錄音',
     },
     routeError: {
       description: '請嘗試重新開啟此區段。',

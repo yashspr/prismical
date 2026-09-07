@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import type {
   AiModelListing,
   AiProviderKind,
+  CliEffort,
   AiProviderSetting as AiProviderRecord,
 } from '@prismical/app-contracts';
 import { useQueryClient } from '@tanstack/react-query';
@@ -31,30 +32,67 @@ import {
 import { Input } from '@prismical/app-ui/ui/input';
 import { Label } from '@prismical/app-ui/ui/label';
 import { RadioGroup, RadioGroupItem } from '@prismical/app-ui/ui/radio-group';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@prismical/app-ui/ui/select';
 import { CommittedInput } from './committed-input';
 
-const PROVIDERS: readonly AiProviderKind[] = ['openai', 'anthropic', 'openai-compatible', 'ollama'];
+const PROVIDERS: readonly AiProviderKind[] = [
+  'openai',
+  'anthropic',
+  'openai-compatible',
+  'ollama',
+  'cli',
+];
 const isProvider = (value: string): value is AiProviderKind =>
   (PROVIDERS as readonly string[]).includes(value);
 
-/** Which fields a provider needs: a key (Ollama never), a base URL (the hosted APIs never). */
+/**
+ * Which fields a provider needs: a key (Ollama and the CLIs never — a CLI is
+ * already signed in on this machine, which is the whole point), a base URL (the
+ * hosted APIs never), a command template (the CLI provider only).
+ */
 const HAS_KEY: Record<AiProviderKind, boolean> = {
   openai: true,
   anthropic: true,
   'openai-compatible': true,
   ollama: false,
+  cli: false,
 };
 const HAS_BASE_URL: Record<AiProviderKind, boolean> = {
   openai: false,
   anthropic: false,
   'openai-compatible': true,
   ollama: true,
+  cli: false,
 };
 const BASE_URL_PLACEHOLDER: Record<AiProviderKind, string> = {
   openai: '',
   anthropic: '',
   'openai-compatible': 'http://localhost:1234/v1',
   ollama: 'http://127.0.0.1:11434',
+  cli: '',
+};
+/**
+ * The reasoning-effort levels offered. Claude Code's `--effort` vocabulary, and
+ * the contract enum is the same list — main filters the chosen value against
+ * the SELECTED CLI's own published levels, so picking one here while running a
+ * CLI that has no effort control simply omits the flag.
+ */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** The sentinel for "no explicit effort" — Select has no null value. */
+const EFFORT_DEFAULT = 'default';
+
+const HAS_CLI_COMMAND: Record<AiProviderKind, boolean> = {
+  openai: false,
+  anthropic: false,
+  'openai-compatible': false,
+  ollama: false,
+  cli: true,
 };
 const MODEL_LIST_ID = 'ai-provider-model-list';
 
@@ -161,7 +199,8 @@ function CatalogueStatus({
 }
 
 /** 'not-configured' → 'notConfigured' (the i18n key shape). */
-const camel = (value: string): string => value.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+const camel = (value: string): string =>
+  value.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 
 export function AiProviderSetting() {
   const { t } = useTranslation();
@@ -242,7 +281,10 @@ export function AiProviderSetting() {
           ))}
         </RadioGroup>
 
-        <div className="space-y-4 rounded-md border border-border p-4" data-testid="ai-provider-fields">
+        <div
+          className="space-y-4 rounded-md border border-border p-4"
+          data-testid="ai-provider-fields"
+        >
           {HAS_BASE_URL[ai.provider] ? (
             <div className="space-y-1.5">
               <Label htmlFor="ai-provider-base-url">{t('desktop.aiProvider.baseUrlLabel')}</Label>
@@ -258,6 +300,50 @@ export function AiProviderSetting() {
             // Keyed by provider: a typed-but-unsaved key must not outlive the
             // provider it was typed for (it would be saved into the next slot).
             <KeyField key={ai.provider} provider={ai.provider} onChanged={refresh} />
+          ) : null}
+          {HAS_CLI_COMMAND[ai.provider] ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="ai-provider-cli-command">
+                {t('desktop.aiProvider.cliCommandLabel')}
+              </Label>
+              <CommittedInput
+                id="ai-provider-cli-command"
+                value={ai.cliCommand ?? ''}
+                placeholder={t('desktop.aiProvider.cliCommandPlaceholder')}
+                onCommit={next => patch({ cliCommand: next.trim() || null })}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('desktop.aiProvider.cliCommandHelp')}
+              </p>
+            </div>
+          ) : null}
+          {HAS_CLI_COMMAND[ai.provider] ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="ai-provider-effort">{t('desktop.aiProvider.effortLabel')}</Label>
+              <Select
+                value={ai.cliEffort ?? EFFORT_DEFAULT}
+                onValueChange={value =>
+                  patch({ cliEffort: value === EFFORT_DEFAULT ? null : (value as CliEffort) })
+                }
+              >
+                <SelectTrigger id="ai-provider-effort" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={EFFORT_DEFAULT}>
+                    {t('desktop.aiProvider.effortDefault')}
+                  </SelectItem>
+                  {EFFORT_LEVELS.map(level => (
+                    <SelectItem key={level} value={level}>
+                      {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {t('desktop.aiProvider.effortHelp')}
+              </p>
+            </div>
           ) : null}
           <div className="space-y-1.5">
             <Label htmlFor="ai-provider-model">{t('desktop.aiProvider.modelLabel')}</Label>

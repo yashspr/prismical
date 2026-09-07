@@ -91,7 +91,18 @@ const WEBRTC_LICENSE_RESOURCES =
 // node_modules — everything else in the app dir (src, tests, drizzle, e2e…)
 // stays out of the asar. Populated by prePackage before the packager walks.
 // ---------------------------------------------------------------------------
-const EXTERNAL_DEPENDENCIES = ['better-sqlite3', '@prismical/whisper-wrapper'];
+// sherpa-onnx-node is the third: an N-API addon whose actual binary (and the
+// onnxruntime dylibs beside it) lives in a per-platform sibling package it
+// require()s at load time, so it cannot be bundled and must ship as real
+// node_modules like the two above. The parakeet worker resolves it with an
+// ordinary node_modules walk from app.asar.unpacked, exactly as the whisper
+// worker resolves its wrapper.
+const EXTERNAL_DEPENDENCIES = [
+  'better-sqlite3',
+  '@prismical/whisper-wrapper',
+  'sherpa-onnx-node',
+];
+
 
 let externalModulesToShip: string[] = [];
 // prebuilds/<platform>-<arch>.node files the package keeps (see
@@ -245,8 +256,12 @@ const config: ForgeConfig = {
     // the whole wrapper package (dist + native/*.node) unpack too, and the
     // worker's require() walk finds them under app.asar.unpacked/.
     asar: {
+      // The sherpa platform package is unpacked WHOLE, not just its `.node`:
+      // the addon dlopen's libonnxruntime/libsherpa-onnx-*.dylib from its own
+      // directory, and those are not `.node` files.
       unpack:
-        '{**/*.node,**/*.metal,**/node_modules/@prismical/whisper-wrapper/**,**/.vite/build/whisper-worker-fork.js}',
+        '{**/*.node,**/*.metal,**/node_modules/@prismical/whisper-wrapper/**,**/node_modules/sherpa-onnx-node/**,**/node_modules/sherpa-onnx-*-*/**,**/.vite/build/whisper-worker-fork.js,**/.vite/build/parakeet-worker-fork.js}',
+
     },
     appBundleId: 'com.prismical.desktop',
     executableName: 'Prismical',
@@ -574,6 +589,15 @@ const config: ForgeConfig = {
           config: 'vite.worker.config.mts',
           target: 'main',
         },
+        {
+          // The parakeet worker, for the same reason and on the same recipe as
+          // the whisper one above: a single-entry build, so nothing it needs
+          // lands in a shared chunk the Node sidecar cannot read out of asar.
+          entry: 'src/main/infra/parakeet/parakeet-worker-fork.ts',
+          config: 'vite.parakeet-worker.config.mts',
+          target: 'main',
+        },
+
         {
           entry: 'src/preload/main.ts',
           config: 'vite.preload.config.mts',

@@ -83,7 +83,15 @@ test.describe('main-window preload contract', () => {
     // The device-settings read/write/observe surface, exactly.
     expect(shape.settings).toEqual(['get', 'onChanged', 'set']);
     // The local whisper model manager surface, exactly.
-    expect(shape.models).toEqual(['cancelDownload', 'delete', 'download', 'getState', 'onStateChanged']);
+    expect(shape.models).toEqual([
+      'cancelDownload',
+      'delete',
+      'download',
+      'getState',
+      'import',
+      'onStateChanged',
+    ]);
+
     // Updater, BYOK-key, and AI-provider-key actions: the native action surface, exactly.
     expect(shape.capabilities).toEqual([
       'checkForUpdates',

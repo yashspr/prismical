@@ -58,7 +58,11 @@ import {
 import { AppModeService, type AppMode } from '../../src/main/domains/app-mode/service';
 import type { DeviceSettings } from '@prismical/desktop-contracts';
 import { SyncTranscriptSegmentCreateRequestSchema } from '@prismical/api-contracts';
-import { RECOMMENDED_MODEL_ID } from '../../src/main/domains/models/catalogue';
+import {
+  PARAKEET_V3_MODEL_ID,
+  RECOMMENDED_MODEL_ID,
+} from '../../src/main/domains/models/catalogue';
+import { bundleFor, bundlePartIds } from '../../src/main/domains/models/bundles';
 import { TRANSCRIPT_SEGMENTS_PATH } from '../../src/main/domains/recording/segment-mirror';
 import { mintChunkSegment } from '../../src/main/domains/transcriber/segment';
 import {
@@ -2518,6 +2522,53 @@ describe('RecordingService — lifecycle ownership and durability', () => {
       assert.strictEqual(h.fakeCloud.createCalls.length, 0);
       assert.strictEqual((yield* SubscriptionRef.get(h.service.state)).status, 'idle');
       assert.deepStrictEqual(yield* h.db.listRecoveryOutbox(), []);
+      yield* Scope.close(h.sessionScope, Exit.void);
+    })
+  );
+
+  // A bundle is the unit of CHOICE, the catalogue entry the unit of TRANSFER:
+  // `transcription.modelId` holds the bundle id, while `installedPath` and the
+  // `local_model` rows only ever know the four part ids. A gate that asks about
+  // the selection directly answers "missing" with all 670 MB on disk — which is
+  // exactly what shipped, and what these two pin.
+  const parakeetParts = (installed: ReadonlyArray<string>): Record<string, string> =>
+    Object.fromEntries(installed.map(id => [id, `/models/${id}.bin`]));
+  const v3Parts = bundlePartIds(bundleFor(PARAKEET_V3_MODEL_ID)!);
+
+  it.effect('a fully installed Parakeet bundle starts, though nothing owns the bundle id', () =>
+    Effect.gen(function* () {
+      const h = yield* setup({}, undefined, {
+        mode: 'local',
+        transcription: { modelId: PARAKEET_V3_MODEL_ID },
+        installedModels: parakeetParts(v3Parts),
+      });
+      const id = yield* h.service.start({ captureMode: 'mic' });
+      yield* poll(
+        SubscriptionRef.get(h.service.state).pipe(Effect.map(s => s.status === 'recording')),
+        'recording'
+      );
+      assert.strictEqual(h.fakeCapture.sessions.length, 1);
+      yield* h.service.stop(id);
+      yield* Scope.close(h.sessionScope, Exit.void);
+    })
+  );
+
+  it.effect('a Parakeet bundle missing one part still refuses Start', () =>
+    Effect.gen(function* () {
+      const h = yield* setup({}, undefined, {
+        mode: 'local',
+        transcription: { modelId: PARAKEET_V3_MODEL_ID },
+        // Everything but the joiner: a half-installed bundle is not a model.
+        installedModels: parakeetParts(v3Parts.filter(id => !id.endsWith('-joiner'))),
+      });
+      const result = yield* Effect.exit(h.service.start({ captureMode: 'mic' }));
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result)) {
+        const error = Cause.failureOption(result.cause);
+        if (Option.isSome(error))
+          assert.deepInclude(error.value, { _tag: 'RecordingStartError', reason: 'model-missing' });
+      }
+      assert.strictEqual(h.fakeCapture.sessions.length, 0);
       yield* Scope.close(h.sessionScope, Exit.void);
     })
   );

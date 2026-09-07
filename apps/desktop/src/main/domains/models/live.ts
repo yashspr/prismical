@@ -34,14 +34,26 @@
 import { createHash, type Hash } from 'node:crypto';
 import { once } from 'node:events';
 import * as fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { finished } from 'node:stream/promises';
 import { Effect, FiberMap, Layer, Option, Ref, Stream, SubscriptionRef } from 'effect';
-import type { ModelDownloadView, ModelsStateView } from '@prismical/desktop-contracts';
+import type {
+  ModelDownloadView,
+  ModelImportResult,
+  ModelsStateView,
+  ModelView,
+} from '@prismical/desktop-contracts';
 import { AppConfig } from '../../infra/config/service';
 import { MainLogger } from '../../infra/logging/service';
-import { OperationalDb, type LocalModelRow } from '../../infra/operational-db/service';
+import {
+  OperationalDb,
+  type DbError,
+  type LocalModelRow,
+} from '../../infra/operational-db/service';
+
 import { PendingReset } from '../../infra/pending-reset/service';
+import { bundlePartIds, MODEL_BUNDLES, type ModelBundle } from './bundles';
 import { MODEL_CATALOGUE, type ModelCatalogueEntry } from './catalogue';
 import { ModelError, ModelManager, type ModelManagerApi } from './service';
 
@@ -62,6 +74,10 @@ export interface ModelManagerOptions {
   readonly probe?: ModelDiskProbe;
   /** A catalogue whose URLs point at a local fixture server. */
   readonly catalogue?: ReadonlyArray<ModelCatalogueEntry>;
+  /** Bundles over that catalogue (see bundles.ts). */
+  readonly bundles?: ReadonlyArray<ModelBundle>;
+  /** Directories `import` scans for an existing copy (see EXTERNAL_MODEL_ROOTS). */
+  readonly externalRoots?: ReadonlyArray<string>;
 }
 
 const statfsProbe: ModelDiskProbe = {
@@ -137,6 +153,146 @@ const fsync = async (file: string): Promise<void> => {
   }
 };
 
+// ---- import: reusing weights that are already on the device -----------------
+
+/**
+ * How far and how wide an import scan may go. A user asked for it and is
+ * watching a spinner, so it must finish in seconds, not minutes: the depth cap
+ * keeps a deep tree from becoming a full-disk walk, the directory cap bounds a
+ * wide one, and the hash cap bounds the pathological case where many files
+ * happen to share a pinned size.
+ */
+const MAX_SCAN_DEPTH = 5;
+const MAX_SCAN_DIRS = 20_000;
+const MAX_HASH_CANDIDATES = 64;
+
+/**
+ * Where other apps and toolchains keep ASR weights. Scanned ONLY on an explicit
+ * `import` request — never at boot — and deliberately limited to model/cache
+ * directories: `~/Downloads` and `~/Documents` are TCC-protected on macOS and a
+ * background scan of them would raise a system prompt out of nowhere. The
+ * folder picker covers those, because picking a folder is itself the consent.
+ */
+const externalModelRoots = (): ReadonlyArray<string> => {
+  const home = os.homedir();
+  const roots =
+    process.platform === 'darwin'
+      ? [
+          path.join(home, 'Library', 'Application Support'),
+          path.join(home, 'Library', 'Caches', 'huggingface'),
+        ]
+      : process.platform === 'win32'
+        ? [
+            process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'),
+            process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local'),
+          ]
+        : [path.join(home, '.local', 'share'), path.join(home, '.config')];
+  return [...roots, path.join(home, '.cache', 'huggingface')];
+};
+
+/**
+ * Find, among `roots`, a file for each of `entries` — identified by its PINNED
+ * SHA-1, never by its name: the same weights ship under different filenames in
+ * different tools, and a name match on the wrong bytes would install a model
+ * that cannot load. Size is only the prefilter that decides which few files are
+ * worth hashing.
+ *
+ * Returns entry id → absolute path. `skipDir` is the app's own models dir,
+ * which reconcile already owns.
+ */
+const scanForEntries = async (
+  entries: ReadonlyArray<ModelCatalogueEntry>,
+  roots: ReadonlyArray<string>,
+  skipDir: string
+): Promise<ReadonlyMap<string, string>> => {
+  const bySize = new Map<number, ModelCatalogueEntry[]>();
+  for (const entry of entries) {
+    const sharing = bySize.get(entry.sizeBytes);
+    if (sharing === undefined) bySize.set(entry.sizeBytes, [entry]);
+    else sharing.push(entry);
+  }
+  const found = new Map<string, string>();
+  const visited = new Set<string>();
+  let dirs = 0;
+  let hashed = 0;
+
+  const visit = async (dir: string, depth: number): Promise<void> => {
+    if (depth > MAX_SCAN_DEPTH || dirs >= MAX_SCAN_DIRS || found.size === entries.length) return;
+    // realpath both dedupes (two roots under one tree) and closes symlink loops.
+    const real = await fs.promises.realpath(dir).catch(() => null);
+    if (real === null || real === skipDir || visited.has(real)) return;
+    visited.add(real);
+    dirs += 1;
+    const items = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => null);
+    if (items === null) return;
+    for (const item of items) {
+      // Dotted trees are caches and VCS metadata, never a user's model library
+      // — except the roots above, which name their own dot-directories.
+      if (item.name.startsWith('.')) continue;
+      const full = path.join(dir, item.name);
+      // A Dirent describes the LINK, so a symlinked directory reports
+      // isDirectory() false; stat resolves what it actually points at.
+      const stats = item.isSymbolicLink() ? await fs.promises.stat(full).catch(() => null) : item;
+      if (stats === null) continue;
+      if (stats.isDirectory()) {
+        await visit(full, depth + 1);
+        if (found.size === entries.length) return;
+        continue;
+      }
+      if (!stats.isFile()) continue;
+      const size = await fileSize(full).catch(() => null);
+      if (size === null) continue;
+      for (const entry of bySize.get(size) ?? []) {
+        if (found.has(entry.id) || hashed >= MAX_HASH_CANDIDATES) continue;
+        hashed += 1;
+        const actual = await sha1File(full).catch(() => null);
+        if (actual === entry.sha1) {
+          found.set(entry.id, full);
+          break;
+        }
+      }
+    }
+  };
+
+  for (const root of roots) await visit(root, 0);
+  return found;
+};
+
+/**
+ * Point `linkPath` at `target` without copying a byte. A hard link first —
+ * it needs no privileges, survives the original being moved or deleted, and
+ * costs one directory entry — falling back to a symlink when the two are on
+ * different filesystems (EXDEV), which is exactly the external-drive case.
+ * Returns false when neither worked.
+ */
+const linkFile = async (target: string, linkPath: string): Promise<boolean> => {
+  await unlinkQuiet(linkPath).catch(() => undefined);
+  try {
+    await fs.promises.link(target, linkPath);
+    return true;
+  } catch {
+    try {
+      await fs.promises.symlink(target, linkPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+};
+
+/**
+ * Whether an installed file is really a second name for bytes that live
+ * elsewhere: a symlink, or a hard link with another name still pointing at the
+ * same inode. Both mean deleting the model frees nothing and leaves the
+ * original alone — which the delete confirmation has to say.
+ */
+const isLinkedFile = async (file: string): Promise<boolean> => {
+  const link = await fs.promises.lstat(file).catch(() => null);
+  if (link === null) return false;
+  if (link.isSymbolicLink()) return true;
+  return link.nlink > 1;
+};
+
 export const makeModelManagerLive = (
   options: ModelManagerOptions = {}
 ): Layer.Layer<ModelManager, never, AppConfig | OperationalDb | MainLogger | PendingReset> =>
@@ -155,6 +311,35 @@ export const makeModelManagerLive = (
       const catalogue = options.catalogue ?? MODEL_CATALOGUE;
       const findEntry = (modelId: string): ModelCatalogueEntry | undefined =>
         catalogue.find(entry => entry.id === modelId);
+
+      // Bundles bound to THIS catalogue (a fixture catalogue in tests): a
+      // bundle whose parts are not all present is dropped rather than shown as
+      // a row that can never install.
+      const bundles = (options.bundles ?? MODEL_BUNDLES).filter(bundle =>
+        bundlePartIds(bundle).every(partId => findEntry(partId) !== undefined)
+      );
+      const findBundle = (modelId: string): ModelBundle | undefined =>
+        bundles.find(bundle => bundle.id === modelId);
+      const partEntries = (bundle: ModelBundle): ReadonlyArray<ModelCatalogueEntry> =>
+        bundlePartIds(bundle).flatMap(partId => {
+          const entry = findEntry(partId);
+          return entry === undefined ? [] : [entry];
+        });
+      /** Catalogue ids owned by some bundle — these never get a row of their own. */
+      const partOwners = new Map<string, ModelBundle>(
+        bundles.flatMap(bundle => bundlePartIds(bundle).map(partId => [partId, bundle] as const))
+      );
+      /**
+       * The catalogue entries a user-facing model id covers: its four parts for
+       * a bundle, itself for a plain entry, none for an id we do not know.
+       */
+      const entriesFor = (modelId: string): ReadonlyArray<ModelCatalogueEntry> => {
+        const bundle = findBundle(modelId);
+        if (bundle !== undefined) return partEntries(bundle);
+        const entry = findEntry(modelId);
+        return entry === undefined ? [] : [entry];
+      };
+      const externalRoots = options.externalRoots ?? externalModelRoots();
 
       const partPath = (entry: ModelCatalogueEntry) =>
         path.join(modelsDir, entry.filename + PART_SUFFIX);
@@ -184,34 +369,128 @@ export const makeModelManagerLive = (
       // offset without remembered size/etag, and the streaming SHA-1 over
       // prefix+tail is the backstop for a changed upstream.
       const resumeRef = yield* Ref.make<ReadonlyMap<string, ResumeMeta>>(new Map());
+      // Which installed files are a second name for bytes that live elsewhere
+      // (models:import). Derived from the disk, not the DB — a hard link is
+      // indistinguishable from a plain file in a row — so it is recomputed by
+      // every reconcile and set directly by an import. Empty until the boot
+      // reconcile lands, which only understates the warning, never overstates it.
+      const linkedRef = yield* Ref.make<ReadonlySet<string>>(new Set());
+
+      /**
+       * A bundle folded into ONE row. Its parts never appear on their own: the
+       * user chose a model, not four files, so `installed` is "all four are",
+       * the progress bar is the sum over all four (an installed part counts as
+       * its full size, so a resumed bundle does not restart at zero), and the
+       * status is the worst any part is in — an error on the token table must
+       * not hide behind 652 MB of successful encoder.
+       */
+      const bundleRow = (
+        bundle: ModelBundle,
+        rows: ReadonlyMap<string, LocalModelRow>,
+        downloads: ReadonlyMap<string, ModelDownloadView>,
+        linked: ReadonlySet<string>
+      ): ModelView => {
+        const entries = partEntries(bundle);
+        const parts = entries.map(entry => ({
+          entry,
+          row: rows.get(entry.id),
+          download: downloads.get(entry.id) ?? null,
+        }));
+        const installed = parts.every(part => part.row !== undefined);
+        const active = parts.flatMap(part => (part.download === null ? [] : [part.download]));
+        const status = active.some(one => one.status === 'error')
+          ? ('error' as const)
+          : active.some(one => one.status === 'downloading')
+            ? ('downloading' as const)
+            : active.some(one => one.status === 'verifying')
+              ? ('verifying' as const)
+              : active.some(one => one.status === 'cancelling')
+                ? ('cancelling' as const)
+                : null;
+        const download =
+          status === null
+            ? null
+            : {
+                status,
+                bytesDownloaded: parts.reduce(
+                  (total, part) =>
+                    total +
+                    (part.row !== undefined
+                      ? part.entry.sizeBytes
+                      : (part.download?.bytesDownloaded ?? 0)),
+                  0
+                ),
+                totalBytes: parts.reduce(
+                  (total, part) => total + (part.download?.totalBytes ?? part.entry.sizeBytes),
+                  0
+                ),
+                error: active.find(one => one.error !== null)?.error ?? null,
+              };
+        const installedAt = parts
+          .map(part => part.row?.downloadedAt ?? null)
+          .reduce<
+            string | null
+          >((latest, at) => (at === null || latest === null ? null : at > latest ? at : latest), '');
+        return {
+          id: bundle.id,
+          name: bundle.name,
+          // Not a real file: the bundle IS four of them. The screen shows the
+          // name and the size, never this.
+          filename: bundle.id,
+          sizeBytes: entries.reduce((total, entry) => total + entry.sizeBytes, 0),
+          kind: bundle.kind,
+          recommended: bundle.recommended === true,
+          installed,
+          installedAt: installed ? installedAt : null,
+          download,
+          // ANY linked part: deleting still leaves someone else's bytes behind,
+          // which is what the confirmation has to warn about.
+          linked: parts.some(part => part.row !== undefined && linked.has(part.entry.id)),
+        };
+      };
 
       const buildView = (
         rows: ReadonlyMap<string, LocalModelRow>,
-        downloads: ReadonlyMap<string, ModelDownloadView>
+        downloads: ReadonlyMap<string, ModelDownloadView>,
+        linked: ReadonlySet<string>
       ): ModelsStateView => ({
-        models: catalogue.map(entry => {
+        // Catalogue order, with each bundle standing where its first part would
+        // have stood — so adding a bundle never reshuffles the screen.
+        models: catalogue.flatMap((entry): ReadonlyArray<ModelView> => {
+          const owner = partOwners.get(entry.id);
+          if (owner !== undefined) {
+            return bundlePartIds(owner)[0] === entry.id
+              ? [bundleRow(owner, rows, downloads, linked)]
+              : [];
+          }
           const row = rows.get(entry.id);
-          return {
-            id: entry.id,
-            name: entry.name,
-            filename: entry.filename,
-            sizeBytes: entry.sizeBytes,
-            kind: entry.kind,
-            recommended: entry.recommended === true,
-            installed: row !== undefined,
-            installedAt: row?.downloadedAt ?? null,
-            download: downloads.get(entry.id) ?? null,
-          };
+          return [
+            {
+              id: entry.id,
+              name: entry.name,
+              filename: entry.filename,
+              sizeBytes: entry.sizeBytes,
+              kind: entry.kind,
+              recommended: entry.recommended === true,
+              installed: row !== undefined,
+              installedAt: row?.downloadedAt ?? null,
+              download: downloads.get(entry.id) ?? null,
+              linked: row !== undefined && linked.has(entry.id),
+            },
+          ];
         }),
         modelsDir,
       });
 
-      const state = yield* SubscriptionRef.make(buildView(yield* Ref.get(rowsRef), new Map()));
+      const state = yield* SubscriptionRef.make(
+        buildView(yield* Ref.get(rowsRef), new Map(), new Set())
+      );
 
       const publish: Effect.Effect<void> = Effect.gen(function* () {
         const rows = yield* Ref.get(rowsRef);
         const downloads = yield* Ref.get(downloadsRef);
-        yield* SubscriptionRef.set(state, buildView(rows, downloads));
+        const linked = yield* Ref.get(linkedRef);
+        yield* SubscriptionRef.set(state, buildView(rows, downloads, linked));
       });
 
       const setDownload = (modelId: string, view: ModelDownloadView | null) =>
@@ -529,6 +808,15 @@ export const makeModelManagerLive = (
             .upsertLocalModel(row)
             .pipe(Effect.mapError(error => io(entry.id, 'persist row')(error.cause)));
           yield* setRow(entry.id, { ...row, createdAt: now, updatedAt: now });
+          // Freshly downloaded bytes are OURS — clear any stale link marking
+          // from a copy that was imported and then re-downloaded.
+          yield* Ref.update(linkedRef, current => {
+            if (!current.has(entry.id)) return current;
+            const next = new Set(current);
+            next.delete(entry.id);
+            return next;
+          });
+
           yield* Ref.update(resumeRef, memory => {
             const next = new Map(memory);
             next.delete(entry.id);
@@ -584,7 +872,7 @@ export const makeModelManagerLive = (
           const vad = catalogue.find(entry => entry.kind === 'vad');
           if (vad === undefined) return;
           if ((yield* Ref.get(rowsRef)).has(vad.id)) return;
-          yield* download(vad.id).pipe(
+          yield* downloadEntry(vad.id).pipe(
             Effect.tap(() =>
               log.info('vad model auto-download started', {
                 modelId: vad.id,
@@ -646,9 +934,11 @@ export const makeModelManagerLive = (
 
       // ---- verbs ------------------------------------------------------------
 
-      const download: ModelManagerApi['download'] = modelId =>
+      /** One catalogue entry: the whole pre-flight + supervised fetch. */
+      const downloadEntry = (modelId: string): Effect.Effect<void, ModelError> =>
         Effect.gen(function* () {
           const entry = findEntry(modelId);
+
           if (entry === undefined) {
             return yield* Effect.fail(new ModelError({ reason: 'unknown-model', modelId }));
           }
@@ -728,7 +1018,7 @@ export const makeModelManagerLive = (
           yield* log.info('model download started', { modelId, resumeFrom: partSize });
         });
 
-      const cancel: ModelManagerApi['cancel'] = modelId =>
+      const cancelEntry = (modelId: string): Effect.Effect<void> =>
         Effect.gen(function* () {
           if (yield* FiberMap.has(fibers, modelId)) {
             const current = (yield* Ref.get(downloadsRef)).get(modelId);
@@ -750,23 +1040,106 @@ export const makeModelManagerLive = (
           if (current?.status === 'error') yield* setDownload(modelId, null);
         });
 
-      const remove: ModelManagerApi['delete'] = modelId =>
+      const removeEntry = (modelId: string): Effect.Effect<void, ModelError | DbError> =>
         Effect.gen(function* () {
           const entry = findEntry(modelId);
           if (entry === undefined) {
             return yield* Effect.fail(new ModelError({ reason: 'unknown-model', modelId }));
           }
-          yield* cancel(modelId);
+          yield* cancelEntry(modelId);
           const row = (yield* Ref.get(rowsRef)).get(modelId);
+          // For an imported model this unlinks the LINK, never the original —
+          // that is the whole point of linking rather than copying.
           yield* Effect.tryPromise({
             try: () => unlinkQuiet(row?.path ?? finalPath(entry)),
             catch: io(modelId, 'unlink'),
           });
           yield* db.deleteLocalModel(modelId);
           yield* setRow(modelId, null);
+          yield* Ref.update(linkedRef, current => {
+            if (!current.has(modelId)) return current;
+            const next = new Set(current);
+            next.delete(modelId);
+            return next;
+          });
           yield* publish;
           yield* log.info('model deleted', { modelId });
         });
+
+      // ---- bundle fan-out ---------------------------------------------------
+      //
+      // A bundle id is a valid model id everywhere the renderer uses one, so
+      // each verb either forwards to the single entry or fans out over the four
+      // parts. The fan-out is CONCURRENT, like the VAD auto-kick: the parts are
+      // independent transfers with their own fibers, `.part` files and resume
+      // state, and serialising them would only make a 660 MB install slower.
+
+      const download: ModelManagerApi['download'] = modelId =>
+        Effect.gen(function* () {
+          const bundle = findBundle(modelId);
+          if (bundle === undefined) return yield* downloadEntry(modelId);
+          const rows = yield* Ref.get(rowsRef);
+          const pending: string[] = [];
+          for (const entry of partEntries(bundle)) {
+            if (rows.has(entry.id)) continue;
+            if (yield* FiberMap.has(fibers, entry.id)) continue;
+            pending.push(entry.id);
+          }
+          if (pending.length === 0) {
+            // Either every part is installed or every missing one is already in
+            // flight — both are "nothing for this click to do", and the caller
+            // tells them apart from `state`.
+            const inFlight = yield* Effect.reduce(partEntries(bundle), false, (any, entry) =>
+              FiberMap.has(fibers, entry.id).pipe(Effect.map(has => any || has))
+            );
+            return yield* Effect.fail(
+              new ModelError({
+                reason: inFlight ? 'download-in-progress' : 'already-installed',
+                modelId,
+              })
+            );
+          }
+          // A part's own refusal must not abort its siblings: the point of the
+          // fan-out is that as much of the bundle as can start, starts.
+          for (const partId of pending) {
+            yield* downloadEntry(partId).pipe(
+              Effect.catchTag('ModelError', error =>
+                log.warn('bundle part download refused', {
+                  modelId,
+                  partId,
+                  reason: error.reason,
+                  detail: error.detail,
+                })
+              )
+            );
+          }
+          yield* log.info('bundle download started', { modelId, parts: pending.length });
+        });
+
+      const cancel: ModelManagerApi['cancel'] = modelId => {
+        const bundle = findBundle(modelId);
+        return bundle === undefined
+          ? cancelEntry(modelId)
+          : Effect.forEach(partEntries(bundle), entry => cancelEntry(entry.id), {
+              discard: true,
+            });
+      };
+
+      const remove: ModelManagerApi['delete'] = modelId => {
+        const bundle = findBundle(modelId);
+        return bundle === undefined
+          ? removeEntry(modelId)
+          : Effect.forEach(
+              // Only the parts that are actually installed: removeEntry on a
+              // missing one is harmless, but the log would claim four deletions.
+              partEntries(bundle),
+              entry =>
+                Ref.get(rowsRef).pipe(
+                  Effect.flatMap(rows => (rows.has(entry.id) ? removeEntry(entry.id) : Effect.void))
+                ),
+              { discard: true }
+            ).pipe(Effect.zipRight(log.info('bundle deleted', { modelId })));
+      };
 
       const reconcile: ModelManagerApi['reconcile'] = Effect.gen(function* () {
         const report = { removed: 0, adopted: 0, partsDeleted: 0 };
@@ -864,10 +1237,145 @@ export const makeModelManagerLive = (
           for (const [modelId, row] of adopted) next.set(modelId, row);
           return next;
         });
+        // Re-derive which installed files are links. Only reconcile can: a hard
+        // link is an ordinary file to the DB, so the answer lives on disk and
+        // nowhere else, and it has to be re-read whenever the rows change.
+        const settledRows = yield* Ref.get(rowsRef);
+        const linked = new Set<string>();
+        for (const [modelId, row] of settledRows) {
+          if (yield* Effect.promise(() => isLinkedFile(row.path))) linked.add(modelId);
+        }
+        yield* Ref.set(linkedRef, linked);
         yield* publish;
         yield* log.info('local models reconciled', report);
+        // Its own line rather than a field on the report: `linked` is a
+        // property of the DISK, not of what this pass changed, and it is only
+        // worth a support engineer's attention when it is not zero.
+        if (linked.size > 0) {
+          yield* log.info('local models linked from elsewhere on this device', {
+            count: linked.size,
+          });
+        }
+
         return report;
       });
+
+      /**
+       * Reuse weights that already exist on this device instead of downloading
+       * them again.
+       *
+       * The whole verb is: find files whose SHA-1 equals a pinned one, LINK
+       * them into modelsDir under the catalogue filename, and let `reconcile`
+       * do the adopting. That is deliberate — reconcile is the one place that
+       * decides what "installed" means (verify the bytes, write the row, publish
+       * the snapshot), and an import that took its own shortcut would be a
+       * second answer to the same question. The cost is re-hashing the matched
+       * files once, which is seconds even for a 652 MB encoder.
+       *
+       * `sourceDir` null means "scan the model directories we know about";
+       * otherwise it is a folder the USER picked, which is the only reason it
+       * is allowed to be anywhere on disk.
+       */
+      const importExisting = (
+        modelId: string,
+        sourceDir: string | null
+      ): Effect.Effect<ModelImportResult> =>
+        Effect.gen(function* () {
+          const entries = entriesFor(modelId);
+          if (entries.length === 0) {
+            return { outcome: 'unknown-model', imported: 0, total: 0, sourceDir: null } as const;
+          }
+          const rows = yield* Ref.get(rowsRef);
+          const wanted = entries.filter(entry => !rows.has(entry.id));
+          if (wanted.length === 0) {
+            return {
+              outcome: 'already-installed',
+              imported: 0,
+              total: entries.length,
+              sourceDir: null,
+            } as const;
+          }
+          const roots = sourceDir === null ? externalRoots : [sourceDir];
+          yield* log.info('model import scan started', {
+            modelId,
+            wanted: wanted.length,
+            roots: roots.length,
+          });
+          const matches = yield* Effect.promise(() =>
+            scanForEntries(wanted, roots, modelsDir).catch(
+              () => new Map<string, string>() as ReadonlyMap<string, string>
+            )
+          );
+          if (matches.size === 0) {
+            yield* log.info('model import found nothing', { modelId });
+            return {
+              outcome: 'not-found',
+              imported: 0,
+              total: entries.length,
+              sourceDir: null,
+            } as const;
+          }
+          const prepared = yield* Effect.promise(() =>
+            fs.promises.mkdir(modelsDir, { recursive: true }).then(
+              () => true,
+              () => false
+            )
+          );
+          if (!prepared) {
+            return {
+              outcome: 'io',
+              imported: 0,
+              total: entries.length,
+              sourceDir: null,
+            } as const;
+          }
+          const linkedNow: string[] = [];
+          let from: string | null = null;
+          for (const entry of wanted) {
+            const source = matches.get(entry.id);
+            if (source === undefined) continue;
+            const target = finalPath(entry);
+            // Already the same path (a user picked the models dir itself):
+            // nothing to link, reconcile will adopt it where it stands.
+            if (path.resolve(source) === path.resolve(target)) {
+              linkedNow.push(entry.id);
+              from ??= path.dirname(source);
+              continue;
+            }
+            const ok = yield* Effect.promise(() => linkFile(source, target));
+            if (!ok) {
+              yield* log.warn('model import could not link', { modelId, partId: entry.id, source });
+              continue;
+            }
+            linkedNow.push(entry.id);
+            from ??= path.dirname(source);
+          }
+          if (linkedNow.length === 0) {
+            return { outcome: 'io', imported: 0, total: entries.length, sourceDir: null } as const;
+          }
+          // Reconcile verifies and adopts what we just linked — and recomputes
+          // `linked`, so the screen's delete warning is right without this verb
+          // touching linkedRef at all.
+          yield* reconcile.pipe(
+            Effect.catchTag('DbError', error =>
+              log
+                .error('model import could not persist', { modelId, op: error.op })
+                .pipe(Effect.as({ removed: 0, adopted: 0, partsDeleted: 0 }))
+            )
+          );
+          const after = yield* Ref.get(rowsRef);
+          const imported = entries.filter(
+            entry => after.has(entry.id) && linkedNow.includes(entry.id)
+          ).length;
+          const complete = entries.every(entry => after.has(entry.id));
+          yield* log.info('model import finished', { modelId, imported, complete });
+          return {
+            outcome: imported === 0 ? 'io' : complete ? 'imported' : 'partial',
+            imported,
+            total: entries.length,
+            sourceDir: from,
+          } as const;
+        });
 
       const installedPath: ModelManagerApi['installedPath'] = modelId =>
         Effect.gen(function* () {
@@ -897,6 +1405,7 @@ export const makeModelManagerLive = (
         download,
         cancel,
         delete: remove,
+        import: importExisting,
         reconcile,
         installedPath,
       };

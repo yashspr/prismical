@@ -22,6 +22,7 @@ import {
   type FakeSystemPermissions,
 } from '../helpers/fake-system-permissions';
 import { makeTestLogger, recordingLaneStub, testConfigLayer } from '../helpers/test-layers';
+import { AppConfig } from '../../src/main/infra/config/service';
 import { fakeSecureStoreLayer } from '../helpers/fake-workspace-env';
 import { makeAiProviderLive } from '../../src/main/domains/ai-provider/live';
 import { SecureStore } from '../../src/main/infra/secure-store/service';
@@ -159,6 +160,7 @@ const MODELS_STATE: ModelsStateView = {
       installed: false,
       installedAt: null,
       download: null,
+      linked: false,
     },
   ],
   modelsDir: '/fake/models',
@@ -170,7 +172,12 @@ const MODELS_STATE: ModelsStateView = {
  * outcome. reconcile/installedPath are unreachable from the IPC handlers.
  */
 const makeModelsStub = () => {
-  const calls: Array<{ verb: 'download' | 'cancel' | 'delete'; modelId: string }> = [];
+  const calls: Array<{
+    verb: 'download' | 'cancel' | 'delete' | 'import';
+    modelId: string;
+    sourceDir?: string | null;
+  }> = [];
+
   let downloadEffect: Effect.Effect<void, ModelError> = Effect.void;
   const layer = Layer.effect(
     ModelManager,
@@ -192,7 +199,13 @@ const makeModelsStub = () => {
           Effect.sync(() => {
             calls.push({ verb: 'delete', modelId });
           }),
+        import: (modelId, sourceDir) =>
+          Effect.sync(() => {
+            calls.push({ verb: 'import', modelId, sourceDir });
+            return { outcome: 'not-found', imported: 0, total: 1, sourceDir: null } as const;
+          }),
         reconcile: Effect.succeed({ removed: 0, adopted: 0, partsDeleted: 0 }),
+
         installedPath: () => Effect.succeed(Option.none()),
       };
       return api;
@@ -313,6 +326,7 @@ const ALL_HANDLER_CHANNELS = [
   CHANNELS.updaterQuitInstall,
   CHANNELS.updaterDismissPrompt,
   CHANNELS.capabilityExportLogs,
+  CHANNELS.capabilityRevealAudio,
   CHANNELS.capabilityRestartApp,
   CHANNELS.capabilityResetApp,
   CHANNELS.capabilityGetAppModeState,
@@ -338,6 +352,8 @@ const ALL_HANDLER_CHANNELS = [
   CHANNELS.modelsDownload,
   CHANNELS.modelsCancelDownload,
   CHANNELS.modelsDelete,
+  CHANNELS.modelsImport,
+
 ];
 
 /**
@@ -1786,6 +1802,35 @@ describe('registerMainWindowHandlers', () => {
       })
   );
 
+  it.effect('capability:revealAudio opens the kept-audio folder main owns', () =>
+    Effect.gen(function* () {
+      // The channel takes no payload: the directory is AppConfig's, so a
+      // renderer cannot aim the OS file browser at a path of its choosing.
+      const { layer, nativeOs } = build();
+      const scope = yield* Scope.make();
+      const ctx = yield* Layer.build(layer).pipe(Scope.extend(scope));
+      yield* registerMainWindowHandlers.pipe(Effect.provide(ctx), Scope.extend(scope));
+      const registry = Context.get(ctx, WindowRegistry);
+      yield* registry.openMainWindow.pipe(Scope.extend(scope));
+      const wc = fake.__windowInstances().at(-1)?.webContents;
+      const config = Context.get(ctx, AppConfig);
+
+      yield* Effect.promise(() =>
+        fake.ipcMain.invoke(CHANNELS.capabilityRevealAudio, { sender: wc })
+      );
+      assert.deepStrictEqual(nativeOs.calls.revealDirectory, [config.audioDir]);
+
+      const foreign = yield* Effect.exit(
+        Effect.tryPromise(() =>
+          fake.ipcMain.invoke(CHANNELS.capabilityRevealAudio, { sender: { id: 9999 } })
+        )
+      );
+      assert.isTrue(Exit.isFailure(foreign));
+      assert.deepStrictEqual(nativeOs.calls.revealDirectory, [config.audioDir], 'no second reveal');
+      yield* Scope.close(scope, Exit.void);
+    })
+  );
+
   it.effect('capability:exportLogs reveals the log file, sender-validated', () =>
     Effect.gen(function* () {
       const { layer, nativeOs } = build();
@@ -2549,6 +2594,105 @@ describe('registerMainWindowHandlers', () => {
         );
         assert.isTrue(Exit.isFailure(foreign));
         assert.strictEqual(models.calls.length, before);
+        yield* Scope.close(scope, Exit.void);
+      })
+  );
+
+  it.effect(
+    'models:import answers, opens the picker only when asked, and reports a dismissed picker',
+    () =>
+      Effect.gen(function* () {
+        const { layer, models, nativeOs } = build();
+        const scope = yield* Scope.make();
+        const ctx = yield* Layer.build(layer).pipe(Scope.extend(scope));
+        yield* registerMainWindowHandlers.pipe(Effect.provide(ctx), Scope.extend(scope));
+        const registry = Context.get(ctx, WindowRegistry);
+        yield* registry.openMainWindow.pipe(Scope.extend(scope));
+        const wc = fake.__windowInstances().at(-1)?.webContents;
+
+        // browse:false — no picker, and the manager is asked to scan (null dir).
+        const scanned = yield* Effect.promise(() =>
+          fake.ipcMain.invoke(
+            CHANNELS.modelsImport,
+            { sender: wc },
+            { modelId: 'parakeet-tdt-0.6b-v3', browse: false }
+          )
+        );
+        assert.deepStrictEqual(scanned, {
+          outcome: 'not-found',
+          imported: 0,
+          total: 1,
+          sourceDir: null,
+        });
+        assert.deepStrictEqual(nativeOs.calls.chooseDirectory, []);
+        assert.deepStrictEqual(models.calls.at(-1), {
+          verb: 'import',
+          modelId: 'parakeet-tdt-0.6b-v3',
+          sourceDir: null,
+        });
+
+        // browse:true with a folder chosen — the PICKED path reaches the
+        // manager, and it came from the OS, never from the renderer.
+        nativeOs.calls.nextDirectory = '/Users/someone/models';
+        yield* Effect.promise(() =>
+          fake.ipcMain.invoke(
+            CHANNELS.modelsImport,
+            { sender: wc },
+            { modelId: 'parakeet-tdt-0.6b-v3', browse: true }
+          )
+        );
+        assert.strictEqual(nativeOs.calls.chooseDirectory.length, 1);
+        assert.deepStrictEqual(models.calls.at(-1), {
+          verb: 'import',
+          modelId: 'parakeet-tdt-0.6b-v3',
+          sourceDir: '/Users/someone/models',
+        });
+
+        // A dismissed picker is `cancelled` and never reaches the manager: an
+        // empty scan would otherwise be reported as "nothing found here".
+        nativeOs.calls.nextDirectory = null;
+        const before = models.calls.length;
+        const cancelled = yield* Effect.promise(() =>
+          fake.ipcMain.invoke(
+            CHANNELS.modelsImport,
+            { sender: wc },
+            { modelId: 'parakeet-tdt-0.6b-v3', browse: true }
+          )
+        );
+        assert.deepStrictEqual(cancelled, {
+          outcome: 'cancelled',
+          imported: 0,
+          total: 0,
+          sourceDir: null,
+        });
+        assert.strictEqual(models.calls.length, before);
+
+        // Strict payload: no browse flag, wrong types, extra keys → rejection.
+        for (const bad of [
+          { modelId: 'x' },
+          { browse: true },
+          { modelId: '', browse: true },
+          { modelId: 'x', browse: 'yes' },
+          { modelId: 'x', browse: true, extra: 1 },
+        ]) {
+          const rejected = yield* Effect.exit(
+            Effect.tryPromise(() => fake.ipcMain.invoke(CHANNELS.modelsImport, { sender: wc }, bad))
+          );
+          assert.isTrue(Exit.isFailure(rejected));
+        }
+
+        // Unknown sender → rejection, no picker, no call.
+        const foreign = yield* Effect.exit(
+          Effect.tryPromise(() =>
+            fake.ipcMain.invoke(
+              CHANNELS.modelsImport,
+              { sender: { id: 4242 } },
+              { modelId: 'x', browse: true }
+            )
+          )
+        );
+        assert.isTrue(Exit.isFailure(foreign));
+        assert.strictEqual(nativeOs.calls.chooseDirectory.length, 2);
         yield* Scope.close(scope, Exit.void);
       })
   );

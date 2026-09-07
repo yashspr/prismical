@@ -2314,8 +2314,16 @@ const ja = {
         unsupported: 'このプロバイダーではモデルの一覧を取得できません。',
       },
       clearKey: 'キーを削除',
+      cliCommandHelp:
+        '空欄のままにすると、このマシンで見つかった CLI を使用します。プロンプトは標準入力で渡され、コマンドはシェルを介さずに直接実行されます。',
+      cliCommandLabel: 'カスタムコマンド',
+      cliCommandPlaceholder: 'my-agent --print',
       description:
         'このデバイスで Ask、Enhance、Cleanup、ノート名の生成に使う言語モデルを選択します。',
+      effortDefault: '既定（CLI に任せる）',
+      effortHelp:
+        '労力設定を持つ CLI（現在は Claude Code）に渡されます。対応しない CLI では無視されます。',
+      effortLabel: '推論の労力',
       keyMissing: 'このデバイスにキーは保存されていません。',
       keySet:
         'このデバイスにキーが保存されています。置き換えるには新しいキーを貼り付けてください。',
@@ -2325,6 +2333,11 @@ const ja = {
         anthropic: {
           description: '自分の Anthropic API キーを使います。',
           label: 'Anthropic',
+        },
+        cli: {
+          description:
+            'このマシンにインストール済みでサインイン済みのコーディングエージェント（Claude Code、Codex、opencode、Cursor）を使用します。',
+          label: 'ローカルのエージェント CLI',
         },
         ollama: {
           description: 'ローカルの Ollama ランタイム。データはこのコンピューターから出ません。',
@@ -2396,6 +2409,7 @@ const ja = {
       cancelling: 'キャンセルしています…',
       delete: '削除',
       deleteConfirm: 'モデルファイルをこのデバイスから削除します。いつでも再ダウンロードできます。',
+      deleteConfirmLinked: 'このモデルは、すでにこのデバイスにあったコピーへのリンクです。削除してもリンクが外れるだけで、元のファイルはそのまま残ります。',
       deleteConfirmTitle: '{{name}} を削除しますか？',
       description:
         '音声認識モデルをダウンロードして、このデバイス上で録音を文字起こしします。モデルは Hugging Face から取得し、使用前に検証します。',
@@ -2409,7 +2423,20 @@ const ja = {
         io: 'モデルファイルを書き込めませんでした。',
         network: 'ダウンロードに失敗しました。接続を確認してもう一度お試しください。',
       },
+      groupParakeet: 'Parakeet',
+      groupParakeetHint: 'NVIDIA Parakeet TDT。CPU で Whisper の数倍速く、句読点もその場で付きます。1 モデルは 4 ファイルで、まとめてインストールされます。',
+      groupWhisper: 'Whisper',
+      groupWhisperHint: 'モデル 1 つにつきファイル 1 つ。高精度ですが、大きいほど遅くなります。',
+      importAlready: 'このモデルはすでにインストールされています。',
+      importBrowse: 'フォルダを選択…',
+      importDone: '{{path}} から {{total}} 個中 {{linked}} 個のファイルをリンクしました。ダウンロードは不要です。',
+      importFailed: '一致するコピーは見つかりましたが、リンクできませんでした。',
+      importNotFound: 'このデバイスに一致するコピーは見つかりませんでした。フォルダを自分で指定できます。',
+      importPartial: '{{path}} から {{total}} 個中 {{linked}} 個のファイルをリンクしました。残りをダウンロードしてください。',
+      importScan: '既存のコピーを探す',
+      importSearching: 'このデバイスを検索中…',
       installed: 'インストール済み',
+      linked: 'リンク済み',
       loading: 'モデルを読み込んでいます…',
       recommended: 'おすすめ',
       retry: '再試行',
@@ -2499,6 +2526,13 @@ const ja = {
       silencePause: 'しばらく音声がないため、利用時間を節約するために一時停止します。',
       stillThere: 'まだいますか？',
       takeNotes: 'ノートを取る',
+    },
+    recordingAudio: {
+      description: '文字起こし後の会議音声の扱いを決めます。',
+      keepDescription: '文字起こしの保存後も録音をこのデバイスに残します。マイクとシステム音声を同時に取得すると毎分約 11.5 MB 書き込まれ、古いファイルは自動で削除されません。',
+      keepLabel: '文字起こし後も音声を保存する',
+      reveal: '録音フォルダを表示',
+      title: '会議の音声',
     },
     routeError: {
       description: 'このセクションをもう一度開いてみてください。',

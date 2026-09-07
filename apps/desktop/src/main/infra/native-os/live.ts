@@ -1,6 +1,7 @@
-import { app, shell } from 'electron';
-import { writeFileSync } from 'node:fs';
-import { Effect, Layer } from 'effect';
+import { app, dialog, shell } from 'electron';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { Effect, Layer, Option } from 'effect';
+
 import { log } from '../../logger';
 import { NativeOs, type NativeOsApi } from './service';
 
@@ -37,6 +38,14 @@ export const NativeOsLive: Layer.Layer<NativeOs> = Layer.succeed(
     revealLogs: Effect.sync(() => {
       shell.showItemInFolder(log.transports.file.getFile().path);
     }),
+    // mkdir first: with keepAudio just switched on and no meeting recorded yet
+    // the directory does not exist, and openPath on a missing path silently
+    // does nothing — which reads as a dead button.
+    revealDirectory: dir =>
+      Effect.sync(() => {
+        mkdirSync(dir, { recursive: true });
+        void shell.openPath(dir);
+      }),
     // `app.quit()` rides the single graceful quit path
     // (before-quit → boot scope close → runtime dispose → app.exit), so the
     // product DBs close, the whisper child dies, a live recording parks and
@@ -53,5 +62,17 @@ export const NativeOsLive: Layer.Layer<NativeOs> = Layer.succeed(
       }
       app.quit();
     }),
+    // Modal to the app, not to a window: the settings screen that asks is in
+    // the main window, but a picker parented to a window that closes mid-dialog
+    // would strand it. `filePaths` is empty exactly when the user cancelled.
+    chooseDirectory: title =>
+      Effect.promise(() =>
+        dialog.showOpenDialog({ title, properties: ['openDirectory'] }).then(result =>
+          result.canceled || result.filePaths.length === 0
+            ? Option.none()
+            : Option.some(result.filePaths[0])
+        )
+      ),
   } satisfies NativeOsApi
+
 );

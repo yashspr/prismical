@@ -50,6 +50,7 @@ import {
   fakeModelManagerLayer,
   fakeSecureStoreLayer,
   makeFakeSettings,
+  makeFakeParakeetEngine,
   makeFakeWhisperEngine,
   workspaceEnvStubs,
 } from '../helpers/fake-workspace-env';
@@ -236,6 +237,7 @@ const setup = (
       fakeSecureStoreLayer(),
       fakeModelManagerLayer(),
       makeFakeWhisperEngine().layer,
+      makeFakeParakeetEngine().layer,
       // The local backend resolves its language model through AiProvider.
       fakeAiProviderLayer()
     );
